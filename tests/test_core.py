@@ -113,7 +113,7 @@ def test_status_shape():
         node = await Node().start()
         try:
             s = node.status()
-            assert set(s) == {"addr", "chunks", "files", "peers", "dead_peers", "uptime"}
+            assert set(s) == {"addr", "codec", "chunks", "shards", "files", "peers", "dead_peers", "uptime"}
             assert s["chunks"] == 0
         finally:
             await node.stop()

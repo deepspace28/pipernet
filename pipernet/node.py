@@ -14,17 +14,30 @@ import logging
 import time
 
 from .chunking import CHUNK_SIZE, chunk_data, cid
+from .erasure import ErasureCodec, InsufficientShards
 from .protocol import recv_msg, send_msg
 
 log = logging.getLogger("pipernet")
 
 
 class Node:
-    def __init__(self, host: str = "127.0.0.1", port: int = 0, replication: int = 3):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        replication: int = 3,
+        mode: str = "replication",
+    ):
+        if mode not in ("replication", "erasure"):
+            raise ValueError("mode must be 'replication' or 'erasure'")
         self.host = host
         self.port = port
         self.replication = replication
+        self.mode = mode
+        self.codec = ErasureCodec() if mode == "erasure" else None
         self.store: dict[str, bytes] = {}
+        # erasure mode: (chunk_cid, shard_idx) -> shard bytes
+        self.shards: dict[tuple[str, int], bytes] = {}
         # file_id -> {"name", "size", "chunks": [cid], "holders": {cid: n}}
         self.manifests: dict[str, dict] = {}
         self.peers: list[tuple[str, int]] = []
@@ -83,6 +96,16 @@ class Node:
                 elif op == "has":
                     c = body["cid"]
                     await send_msg(writer, {"ok": c in self.store})
+                elif op == "store_shard":
+                    key = (body["cid"], int(body["idx"]))
+                    self.shards[key] = payload
+                    await send_msg(writer, {"ok": True})
+                elif op == "fetch_shard":
+                    d = self.shards.get((body["cid"], int(body["idx"])))
+                    await send_msg(writer, {"ok": False} if d is None else {"ok": True}, d or b"")
+                elif op == "has_shards":
+                    have = {c: sorted(i for (cc, i) in self.shards if cc == c) for c in body["cids"]}
+                    await send_msg(writer, {"ok": True, "have": have})
                 else:
                     await send_msg(writer, {"ok": False, "err": "unknown op"})
         except Exception as e:
@@ -146,23 +169,46 @@ class Node:
                 n += 1
         return n
 
+    async def _store_shard_on(self, addr, c: str, idx: int, shard: bytes) -> bool:
+        resp = await self._talk(addr, {"op": "store_shard", "cid": c, "idx": idx}, shard)
+        return bool(resp and resp[0].get("ok"))
+
+    async def _fetch_shard(self, addr, c: str, idx: int):
+        resp = await self._talk(addr, {"op": "fetch_shard", "cid": c, "idx": idx})
+        if resp and resp[0].get("ok"):
+            return resp[1]
+        return None
+
     # ---- client API -------------------------------------------------
 
     async def put(self, data: bytes, name: str = "file.bin") -> str:
-        """Upload: chunk -> CID -> replicate onto peers (plus local origin copy)."""
+        """Upload: chunk -> CID -> replicate/encode onto peers (plus local origin copy)."""
         chunks = chunk_data(data)
         cids = [cid(c) for c in chunks]
         file_id = cid(name.encode() + b"\x00" + b"".join(c.encode() for c in cids))
         targets = self._live_peers()
 
         holders: dict[str, int] = {}
-        for c, chunk in zip(cids, chunks):
-            n = 0
-            for addr in targets[: self.replication]:
-                if await self._store_on(addr, c, chunk):
-                    n += 1
-            self.store[c] = chunk  # origin keeps an authoritative copy
-            holders[c] = n + 1
+        if self.mode == "erasure":
+            codec = self.codec
+            for c, chunk in zip(cids, chunks):
+                shards_arr = codec.encode(chunk)
+                net_idx: set[int] = set()
+                for i, shard in enumerate(shards_arr):
+                    if i < codec.data:
+                        self.shards[(c, i)] = shard  # origin keeps the data blocks
+                    if i < len(targets):
+                        if await self._store_shard_on(targets[i], c, i, shard):
+                            net_idx.add(i)
+                holders[c] = len(net_idx | set(range(codec.data)))
+        else:
+            for c, chunk in zip(cids, chunks):
+                n = 0
+                for addr in targets[: self.replication]:
+                    if await self._store_on(addr, c, chunk):
+                        n += 1
+                self.store[c] = chunk  # origin keeps an authoritative copy
+                holders[c] = n + 1
         self.manifests[file_id] = {
             "name": name,
             "size": len(data),
@@ -171,7 +217,9 @@ class Node:
             "origin": (self.host, self.port),
         }
         await self._broadcast_manifests()
-        log.info("put %s (%d chunks, %d bytes)", name, len(chunks), len(data))
+        log.info(
+            "put %s (%d chunks, %d bytes, mode=%s)", name, len(chunks), len(data), self.mode
+        )
         return file_id
 
     async def _broadcast_manifests(self):
@@ -185,11 +233,43 @@ class Node:
             return None
         parts = []
         for c in m["chunks"]:
-            data = await self._fetch_chunk(c)
-            if data is None:
-                raise RuntimeError(f"chunk {c[:12]} unavailable on any node")
-            parts.append(data)
+            if self.mode == "erasure":
+                parts.append(await self._get_erasure_chunk(c))
+            else:
+                data = await self._fetch_chunk(c)
+                if data is None:
+                    raise RuntimeError(f"chunk {c[:12]} unavailable on any node")
+                parts.append(data)
         return b"".join(parts)
+
+    async def _get_erasure_chunk(self, c: str) -> bytes:
+        """Collect ANY codec.data surviving shards, decode, verify the CID."""
+        codec = self.codec
+        have: dict[int, bytes] = {}
+        for i in range(codec.data):
+            s = self.shards.get((c, i))
+            if s is not None:
+                have[i] = s
+        if len(have) < codec.data:
+            for addr in self._live_peers():
+                for i in range(codec.total):
+                    if i in have:
+                        continue
+                    s = await self._fetch_shard(addr, c, i)
+                    if s is not None:
+                        have[i] = s
+                        if len(have) >= codec.data:
+                            break
+                if len(have) >= codec.data:
+                    break
+        shards_list = [have.get(i) for i in range(codec.total)]
+        try:
+            data = codec.decode(shards_list)
+        except InsufficientShards as e:
+            raise RuntimeError(f"chunk {c[:12]} unrecoverable — {e}") from None
+        if cid(data) != c:
+            raise RuntimeError(f"chunk {c[:12]} decoded to wrong content (CID mismatch)")
+        return data
 
     # ---- self-healing ------------------------------------------------
 
@@ -204,7 +284,9 @@ class Node:
             await asyncio.sleep(2.0)
 
     async def _repair_pass(self):
-        """Check every ISR file's chunks; top up replicas after node loss."""
+        """Check every ISR file's chunks; top up replicas/re-encode shards after node loss."""
+        if self.mode == "erasure":
+            return await self._erasure_repair_pass()
         for file_id, m in list(self.manifests.items()):
             live = self._live_peers()
             for c in m["chunks"]:
@@ -224,12 +306,53 @@ class Node:
                             if m["holders"][c] >= self.replication:
                                 break
 
+    async def _erasure_repair_pass(self):
+        """Origin-only repair: batch-query every live peer once per pass for
+        which (chunk, shard) indices it still holds; regenerate any lost
+        parity shard from the local data blocks and re-place all missing
+        shards onto peers that lack them, up to the codec's total shard set."""
+        codec = self.codec
+        for file_id, m in list(self.manifests.items()):
+            live = self._live_peers()
+            if not live:
+                continue
+            net: dict[str, list[int]] = {}
+            for addr in live:
+                resp = await self._talk(addr, {"op": "has_shards", "cids": m["chunks"]})
+                if resp and resp[0].get("ok"):
+                    for c, idxs in resp[0].get("have", {}).items():
+                        net.setdefault(c, []).extend(idxs)
+            for c in m["chunks"]:
+                local = {i for i in range(codec.data) if (c, i) in self.shards}
+                if len(local) < codec.data:
+                    continue  # cannot re-encode without every data block
+                net_idx = set(net.get(c, []))
+                missing = [i for i in range(codec.total) if i not in local and i not in net_idx]
+                if not missing:
+                    m["holders"][c] = codec.total
+                    continue
+                dshards = [self.shards[(c, i)] for i in range(codec.data)]
+                parity = codec.regenerate_parity(dshards)
+                shard_for = {i: (dshards[i] if i < codec.data else parity[i - codec.data]) for i in range(codec.total)}
+                placed_idx: set[int] = set()
+                free = list(live)
+                for idx in missing:
+                    if not free:
+                        break
+                    addr = free.pop(0)
+                    if await self._store_shard_on(addr, c, idx, shard_for[idx]):
+                        placed_idx.add(idx)
+                        log.info("re-encoded shard %d of %s -> %s", idx, c[:12], addr[1])
+                m["holders"][c] = len(local | net_idx | placed_idx)
+
     # ---- stats -------------------------------------------------------
 
     def status(self) -> dict:
         return {
             "addr": f"{self.host}:{self.port}",
+            "codec": self.mode,
             "chunks": len(self.store),
+            "shards": len(self.shards),
             "files": {
                 fid: {"name": m["name"], "size": m["size"], "chunks": len(m["chunks"])}
                 for fid, m in self.manifests.items()
