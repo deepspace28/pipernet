@@ -1,11 +1,15 @@
 """Minimal async HTTP dashboard for a PiperNet node.
 
 Routes:
-  GET  /                   web UI (PiedTube demo)
+  GET  /                   web UI (storage + PiedTube + PiperChat)
   GET  /api/status         aggregated status of every node in the demo mesh
   GET  /api/files          file index on this node
   POST /upload?name=...    raw binary body -> distributed upload
   GET  /stream/<file_id>   reconstructs the file from the network and streams it
+  POST /register?name=...  claim a chat handle on this node (+ gossip)
+  POST /msg                {"from","to","text"} -> flood-route across the mesh
+  GET  /api/inbox?handle=&after=  fetch new chat messages for a handle
+  GET  /api/users          handle registry known to this node
 """
 
 import asyncio
@@ -103,6 +107,53 @@ class Dashboard:
                 "application/octet-stream",
                 data,
             )
+        if method == "POST" and path == "/register":
+            name = (qs.get("name") or [""])[0].strip()
+            if not name:
+                return 400, "text/plain", b"missing handle"
+            try:
+                self.node.register_user(name.strip())
+            except ValueError as e:
+                return 409, "text/plain", str(e).encode()
+            asyncio.get_event_loop().create_task(self.node._gossip_users())
+            return 200, "application/json", json.dumps({"ok": True, "handle": name}).encode()
+        if method == "POST" and path == "/msg":
+            try:
+                m = json.loads(body.decode() or "{}")
+            except json.JSONDecodeError:
+                return 400, "text/plain", b"bad json"
+            to = (m.get("to") or "").strip()
+            text = m.get("text") or ""
+            from_name = (m.get("from") or "anonymous").strip()
+            if not to or not text:
+                return 400, "text/plain", b"missing 'to' or 'text'"
+            mid = await self.node.send(to, text, from_name=from_name)
+            return 200, "application/json", json.dumps({"ok": True, "id": mid}).encode()
+        if method == "GET" and path == "/api/inbox":
+            node = self.node
+            handle = (qs.get("handle") or [""])[0]
+            after = int((qs.get("after") or ["0"])[0])
+            if handle in node.inboxes:
+                msgs = node.inbox(handle)[after:]
+                nxt = len(node.inboxes[handle])
+            else:
+                owner = node.users.get(handle)
+                if owner is None:
+                    msgs, nxt = [], after
+                else:
+                    resp = await node._talk(owner["addr"], {"op": "fetch_inbox", "handle": handle, "after": after})
+                    if resp and resp[0].get("ok"):
+                        msgs, nxt = resp[0]["msgs"], resp[0]["next"]
+                    else:
+                        msgs, nxt = [], after
+            return 200, "application/json", json.dumps({"msgs": msgs, "next": nxt}).encode()
+        if method == "GET" and path == "/api/users":
+            return 200, "application/json", json.dumps(
+                {
+                    u: {"addr": list(r["addr"]), "ts": r["ts"], "local": r["addr"] == (self.node.host, self.node.port)}
+                    for u, r in self.node.users.items()
+                }
+            ).encode()
         return 404, "text/plain", b"not found"
 
 
@@ -112,64 +163,109 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <title>Pied Piper — PiperNet Dashboard</title>
 <style>
-  :root { --blue:#1a5276; --bg:#eef3f7; }
+  :root { --bg:#0a1220; --panel:#101d33; --blue:#4db8ff; --acc:#00d4aa; --txt:#dbe9f7; --mut:#6f8bab; }
   * { box-sizing:border-box; }
-  body { font-family:system-ui,Segoe UI,sans-serif; margin:0; background:var(--bg); color:#12283a; }
-  header { background:linear-gradient(120deg,#dfeaf2,#bfe0ef); padding:24px 32px; }
-  header h1 { margin:0; color:var(--blue); letter-spacing:.5px; }
-  main { max-width:900px; margin:24px auto; padding:0 16px; }
-  section { background:#fff; border:1px solid #d5e2ec; border-radius:10px; padding:18px 20px; margin-bottom:18px; }
-  h2 { margin:0 0 10px; font-size:15px; text-transform:uppercase; color:var(--blue); letter-spacing:1px; }
-  table { width:100%; border-collapse:collapse; font-size:14px; }
-  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid #eef2f5; }
-  button, input[type=file] { font-size:14px; }
-  button { background:var(--blue); color:#fff; border:0; padding:8px 14px; border-radius:6px; cursor:pointer; }
-  input[type=text] { padding:8px; border:1px solid #b9ccdb; border-radius:6px; width:210px; }
-  .muted { color:#6c87a0; font-size:13px; }
-  video { width:100%; border-radius:8px; background:#000; }
-  pre { background:#0e2233; color:#bfe0ef; padding:12px; border-radius:8px; font-size:12px; overflow:auto; max-height:260px; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; margin:0; background:
+    radial-gradient(1200px 600px at 80% -10%, #12305a 0%, transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, #0e2a4a 0%, transparent 55%), var(--bg);
+    color:var(--txt); min-height:100vh; }
+  header { padding:20px 32px; border-bottom:1px solid #16304f; background:#0c1730cc; }
+  header h1 { margin:0; font-size:19px; letter-spacing:3px; color:var(--blue); }
+  header .tag { color:var(--mut); font-size:12.5px; margin-top:4px; }
+  main { max-width:1080px; margin:22px auto 40px; padding:0 16px; display:grid; grid-template-columns:1fr 350px; gap:18px; align-items:start; }
+  @media (max-width:900px){ main { grid-template-columns:1fr; } }
+  section { background:var(--panel); border:1px solid #1c3557; border-radius:12px; padding:16px 18px; margin-bottom:18px; }
+  h2 { margin:0 0 10px; font-size:12.5px; text-transform:uppercase; letter-spacing:2px; color:var(--blue); }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  td, th { text-align:left; padding:7px 8px; border-bottom:1px solid #1a2f4d; }
+  th { color:var(--mut); font-weight:600; }
+  button { background:#164a78; color:#eaf6ff; border:1px solid #2d69a8; padding:8px 14px; border-radius:7px; cursor:pointer; font-size:13.5px; }
+  button:hover { background:#1b5c94; }
+  button.acc { background:#0d5c4c; border-color:#17a085; }
+  button.acc:hover { background:#127c67; }
+  input[type=text] { padding:8px; background:#0b1626; border:1px solid #24466e; border-radius:7px; width:220px; color:var(--txt); }
+  input[type=file] { color:var(--mut); font-size:13px; }
+  .muted { color:var(--mut); font-size:12.5px; }
+  video { width:100%; border-radius:9px; background:#000; }
+  pre { background:#0a1626; color:#9fd4ff; padding:12px; border-radius:9px; font-size:11.5px; overflow:auto; max-height:220px; }
+  #chatlog { display:flex; flex-direction:column; gap:8px; height:300px; overflow-y:auto; padding:4px 2px; }
+  .msg { max-width:88%; padding:8px 11px; border-radius:10px; font-size:13.5px; line-height:1.45; word-wrap:break-word; }
+  .msg .meta { font-size:10.5px; letter-spacing:.5px; opacity:.65; margin-bottom:3px; }
+  .msg.in  { background:#15304f; align-self:flex-start; border-bottom-left-radius:3px; }
+  .msg.out { background:#0d5c4c; align-self:flex-end; border-bottom-right-radius:3px; }
+  .msg.sys { background:transparent; color:var(--mut); align-self:center; font-size:11.5px; max-width:100%; }
+  #chatbar { display:flex; gap:8px; margin-top:10px; }
+  #chatbar input { flex:1; width:auto; min-width:0; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:99px; background:#123355; color:var(--acc); font-size:11px; margin-left:6px; vertical-align:middle; }
+  #users span { display:inline-block; background:#0e2440; border:1px solid #1d3c63; padding:2px 9px; border-radius:99px; margin:2px 4px 2px 0; font-size:11.5px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>&#10004; PIED PIPER &mdash; PiperNet Dashboard</h1>
-  <div class="muted">Decentralized storage &middot; content-addressed chunks &middot; self-healing replication</div>
+  <h1>&#10004; PIED PIPER &mdash; PIPERNET</h1>
+  <div class="tag">decentralized storage &middot; erasure-coded &middot; self-healing &middot; <b style="color:var(--acc)">PiperChat</b></div>
 </header>
 <main>
-  <section>
-    <h2>Upload to the network</h2>
-    <p class="muted">Choose a file (any type). It is chunked, hashed (SHA-256 CIDs) and replicated across peers.</p>
-    <input type="text" id="name" placeholder="display name">
-    <input type="file" id="file">
-    <button onclick="upload()">Upload</button>
-    <div id="upout" class="muted"></div>
-  </section>
+  <div class="col">
+    <section>
+      <h2>Upload to the network</h2>
+      <p class="muted">Chunked (1 MB), SHA-256 CIDs, replicated / RS 8+4 sharded across peers.</p>
+      <input type="text" id="name" placeholder="display name">
+      <input type="file" id="file">
+      <button onclick="upload()">Upload</button>
+      <div id="upout" class="muted"></div>
+    </section>
 
-  <section>
-    <h2>Files on the network</h2>
-    <table id="files"><tr><th>CID (file)</th><th>Name</th><th>Size</th><th>Chunks</th><th></th></tr></table>
-  </section>
+    <section>
+      <h2>Files on the network</h2>
+      <table id="files"><tr><th>CID</th><th>Name</th><th>Size</th><th>Chunks</th><th></th></tr></table>
+    </section>
 
-  <section>
-    <h2>PiedTube &mdash; stream from the mesh</h2>
-    <video id="player" controls></video>
-    <div id="vout" class="muted"></div>
-  </section>
+    <section>
+      <h2>PiedTube &mdash; stream from the mesh</h2>
+      <video id="player" controls></video>
+      <div id="vout" class="muted"></div>
+    </section>
 
-  <section>
-    <h2>Network status</h2>
-    <pre id="status">loading...</pre>
-  </section>
+    <section>
+      <h2>Network status</h2>
+      <pre id="status">loading...</pre>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>PiperChat <span class="pill" id="chatwho">not signed in</span></h2>
+      <div id="signin">
+        <p class="muted">Claim a handle to chat across the mesh. Store-and-forward delivery, flood routing with dedupe &mdash; sealed end-to-end in secure mode.</p>
+        <input type="text" id="handle" placeholder="e.g. gilfoyle">
+        <button class="acc" onclick="reg()">Join</button>
+        <span id="regout" class="muted"></span>
+      </div>
+      <div id="chatui" style="display:none">
+        <div id="chatlog"></div>
+        <div id="chatbar">
+          <input type="text" id="to" placeholder="to handle">
+          <input type="text" id="text" placeholder="message text" onkeydown="if(event.key==='Enter')chat()">
+          <button class="acc" onclick="chat()">Send</button>
+        </div>
+        <div class="muted" id="chatout"></div>
+        <div class="muted" style="margin-top:8px">known handles: <span id="users">&mdash;</span></div>
+      </div>
+    </section>
+  </div>
 </main>
 <script>
 const fmt = n => n > 1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
+
+/* ---- storage / PiedTube ---- */
 async function listFiles() {
   const r = await fetch('/api/files'); const rows = await r.json();
   const t = document.getElementById('files');
-  t.innerHTML = '<tr><th>CID (file)</th><th>Name</th><th>Size</th><th>Chunks</th><th></th></tr>';
+  t.innerHTML = '<tr><th>CID</th><th>Name</th><th>Size</th><th>Chunks</th><th></th></tr>';
   for (const f of rows) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="muted">${f.id.slice(0,16)}...` +
+    tr.innerHTML = `<td class="muted">${f.id.slice(0,16)}...</td>` +
       `<td>${f.name}</td><td>${fmt(f.size)}</td><td>${f.chunks}</td>`;
     const play = document.createElement('button');
     play.textContent = 'Stream';
@@ -198,11 +294,77 @@ async function stream(id, name) {
   v.play();
   out.textContent = 'streaming ' + name;
 }
+
+/* ---- PiperChat ---- */
+let me = localStorage.getItem('pp_handle') || '';
+let cursor = 0;
+async function reg() {
+  const h = document.getElementById('handle').value.trim();
+  if (!h) return;
+  const r = await fetch('/register?name=' + encodeURIComponent(h), { method:'POST' });
+  const out = document.getElementById('regout');
+  if (!r.ok) { out.textContent = (await r.text()) + ' — pick another'; return; }
+  me = h; localStorage.setItem('pp_handle', h);
+  enterChat();
+}
+function enterChat() {
+  document.getElementById('signin').style.display = 'none';
+  document.getElementById('chatui').style.display = 'block';
+  document.getElementById('chatwho').textContent = '@' + me;
+  sys('joined the mesh as @' + me);
+  poll(); setInterval(poll, 1500); users();
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function addmsg(m) {
+  const log = document.getElementById('chatlog');
+  const div = document.createElement('div');
+  div.className = 'msg ' + (m.from === me ? 'out' : 'in');
+  div.innerHTML = `<div class="meta">${esc(m.from)} · ${new Date(m.ts*1000).toLocaleTimeString()}</div>${esc(m.text)}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+function sys(t) {
+  const log = document.getElementById('chatlog');
+  const div = document.createElement('div');
+  div.className = 'msg sys'; div.textContent = t;
+  log.appendChild(div); log.scrollTop = log.scrollHeight;
+}
+async function chat() {
+  const to = document.getElementById('to').value.trim();
+  const text = document.getElementById('text').value.trim();
+  const out = document.getElementById('chatout');
+  if (!to || !text) return;
+  const r = await fetch('/msg', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({from: me, to, text}) });
+  if (!r.ok) { out.textContent = await r.text(); return; }
+  document.getElementById('text').value = '';
+  addmsg({from: me, text, ts: Date.now()/1000});
+  out.textContent = 'routed to the mesh';
+  setTimeout(() => out.textContent = '', 2000);
+}
+async function poll() {
+  const r = await fetch('/api/inbox?handle=' + encodeURIComponent(me) + '&after=' + cursor);
+  const j = await r.json();
+  for (const m of j.msgs) addmsg(m);
+  cursor = j.next;
+}
+async function users() {
+  const r = await fetch('/api/users');
+  const j = await r.json();
+  const names = Object.keys(j);
+  document.getElementById('users').innerHTML = names.length
+    ? names.map(u => '<span>' + esc(u) + '</span>').join('')
+    : '&mdash;';
+}
+
+/* ---- status ticker ---- */
 async function status() {
   const r = await fetch('/api/status');
   document.getElementById('status').textContent = JSON.stringify(await r.json(), null, 2);
 }
 listFiles(); status(); setInterval(status, 2000);
+if (me) { document.getElementById('handle').value = me; }
 </script>
 </body>
 </html>
