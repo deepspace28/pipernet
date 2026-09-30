@@ -50,6 +50,72 @@ What the demo does:
    (erasure mode: the origin **re-encodes** lost shards from its data blocks)
 6. Kills more -> **still uninterrupted**
 
+## Use it in code
+
+PiperNet is a library first — the demo is just one mesh topology. Spawn
+your own and put/get bytes across it:
+
+```python
+import asyncio
+from pipernet import Node
+
+async def main():
+    # start nodes; port=0 picks a free ephemeral port automatically
+    origin  = await Node().start()                      # replication mode, factor 3
+    mirror  = await Node().start()
+    client  = await Node().start()
+
+    # full mesh wiring (peers must know each other both ways)
+    for a, b in ((origin, mirror), (origin, client), (mirror, client)):
+        a.add_peer((b.host, b.port))
+        b.add_peer((a.host, a.port))
+
+    file_id = await origin.put(b"middle-out compression rocks", name="note.txt")
+    data = await client.get(file_id)     # fetched from any surviving holder,
+                                         # CID-verified on receipt; None if
+                                         # unrecoverable
+    assert data == b"middle-out compression rocks"
+
+    await client.stop(); await mirror.stop(); await origin.stop()
+
+asyncio.run(main())
+```
+
+### Node options
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `host` | `127.0.0.1` | bind address for the peer server |
+| `port` | `0` | bind port; `0` = auto-pick. After `start()`, `node.port` holds the real port |
+| `replication` | `3` | replication factor (replication mode) |
+| `mode` | `"replication"` | `"erasure"` switches to Reed-Solomon 8+4 shards per chunk (1.5x overhead, survives any 4 shard losses per chunk) |
+| `secure` | `False` | encrypts every connection: per-connection X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (RFC 8439). Insecure peers talking to a secure node fail the handshake and get rejected |
+
+### Dashboard & HTTP API
+
+Attach a dashboard to any node to get the PiedTube-style web UI and a
+plain HTTP interface to the mesh:
+
+```python
+from pipernet import Dashboard
+
+dash = Dashboard(origin)             # mesh_status_fn defaults to origin.status()
+await dash.start(port=8080)          # returns the bound port
+```
+
+| Endpoint | Method | What it does |
+|---|---|---|
+| `/` | GET | dashboard UI (upload, file list, PiedTube streaming) |
+| `/api/status` | GET | JSON status of every node in the mesh |
+| `/api/files` | GET | JSON manifest: file id, name, size, chunk count |
+| `/upload?name=my-video.mp4` | POST | raw bytes body -> chunked, hashed, spread; returns `{"id", "name"}` |
+| `/stream/<file_id>` | GET | reconstructs the file from the mesh, CID-verified, as raw bytes |
+
+Uploading through the UI is the same call the demo makes — the file is
+chunked into 1 MB pieces, each gets a SHA-256 content ID, and replicas
+or shards are spread across peers; the self-healing repair loop runs
+every 2 s and restores placement when nodes die.
+
 ## Tests
 
 ```bash
