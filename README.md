@@ -12,7 +12,8 @@ and a live web dashboard running a PiedTube-style streaming demo.
 | Spec item | Status |
 |---|---|
 | Headless P2P node | done (`pipernet/node.py`) |
-| Encrypted connections | wire framing in place (TCP); QUIC/TLS is a listed non-goal for this slice |
+| **Crypto primitives (Curve25519)** | **done — RFC 7748 X25519 (Montgomery ladder, vector-verified), RFC 8439 ChaCha20+Poly1305 AEAD, RFC 5869 HKDF — all pure stdlib (`pipernet/crypto.py`); wire-level session encryption is the next slice** |
+| Encrypted connections | primitives landed (`pipernet/crypto.py`); wire framing in place (TCP); QUIC/TLS is a listed non-goal for this slice |
 | Distributed chunking & hashing | done — 1 MB chunks, SHA-256 CIDs (`pipernet/chunking.py`) |
 | **Erasure coding (8 data + 4 parity)** | **done — Cauchy RS over GF(2^8), stdlib-only (`pipernet/erasure.py`); 1.5x storage overhead vs replication's 3x; any 4 shard losses per chunk are survivable** |
 | Multi-peer replication | done — configurable replica factor (default mode) |
