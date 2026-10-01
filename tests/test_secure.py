@@ -1,7 +1,9 @@
-"""Secure-mode tests: X25519 handshake per connection, sealed frames, tamper rejection."""
+﻿"""Secure-mode tests: X25519 handshake per connection, sealed frames, tamper rejection."""
 
 import asyncio
+import json
 import os
+import struct
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -134,3 +136,86 @@ def test_sealed_frame_tamper_raises():
         except ValueError:
             pass
     asyncio.run(t())
+
+
+def test_tofu_pin_is_recorded_and_second_contact_succeeds():
+    async def t():
+        nodes = await _mesh(2, secure=True)
+        try:
+            addr_b = (nodes[1].host, nodes[1].port)
+            resp = await nodes[0]._talk(addr_b, {"op": "ping"})
+            assert resp and resp[0].get("ok") is True
+            assert nodes[0].known_ids[addr_b] == nodes[1].static_pub
+            resp = await nodes[0]._talk(addr_b, {"op": "ping"})
+            assert resp and resp[0].get("ok") is True
+        finally:
+            for n in nodes:
+                await n.stop()
+    run(t())
+
+
+def test_mitm_identity_swap_is_rejected():
+    """Fake reply: correct shape, attacker static key -> pin mismatch."""
+    from pipernet.crypto import x25519_secret
+    from pipernet.protocol import client_channel
+    from pipernet.crypto import x25519
+
+    async def t():
+        victim_pub = x25519_secret()[1]
+        attacker_priv, attacker_pub = x25519_secret()
+        r = asyncio.StreamReader()
+
+        class W:
+            def write(self, b):
+                pass
+            async def drain(self):
+                pass
+
+        body = json.dumps({
+            "op": "kx",
+            "pub": attacker_pub.hex(),
+            "dh2": x25519(attacker_priv, victim_pub).hex(),
+        }).encode()
+        r.feed_data(struct.pack(">II", len(body), 0) + body)
+        r.feed_eof()
+        try:
+            await client_channel(r, W(), pin=victim_pub)
+            raise AssertionError("impostor key accepted")
+        except ValueError:
+            pass
+    asyncio.run(t())
+
+
+def test_mitm_without_static_key_cannot_forge_dh2():
+    """Impostor claims the victim's pinned pub but proves nothing."""
+    from pipernet.crypto import x25519_secret
+    from pipernet.protocol import client_channel
+    from pipernet.crypto import x25519
+
+    async def t():
+        victim_pub = x25519_secret()[1]
+        attacker_priv, _ = x25519_secret()
+        r = asyncio.StreamReader()
+
+        class W:
+            def write(self, b):
+                pass
+            async def drain(self):
+                pass
+
+        body = json.dumps({
+            "op": "kx",
+            "pub": victim_pub.hex(),
+            "dh2": x25519(attacker_priv, victim_pub).hex(),
+        }).encode()
+        r.feed_data(struct.pack(">II", len(body), 0) + body)
+        r.feed_eof()
+        try:
+            await client_channel(r, W(), pin=victim_pub)
+            raise AssertionError("forged dh2 accepted")
+        except ValueError:
+            pass
+    asyncio.run(t())
+
+
+

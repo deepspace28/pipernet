@@ -5,15 +5,16 @@ from .crypto import aead_chacha20_poly1305_open, aead_chacha20_poly1305_seal, x2
 from .erasure import DATA_SHARDS, PARITY_SHARDS, ErasureCodec, InsufficientShards, STRIP
 from .node import Node
 from .dashboard import Dashboard
-from .protocol import SecureChannel
+from .protocol import SecureChannel, node_identity
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "Node",
     "Dashboard",
     "ErasureCodec",
     "InsufficientShards",
     "SecureChannel",
+    "node_identity",
     "chunk_data",
     "cid",
     "chunk_to_cids",

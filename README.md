@@ -1,4 +1,4 @@
-# PiperNet — Pied Piper Prototype V0.2
+# PiperNet — Pied Piper Prototype V0.4
 
 > *"It's the internet, completely decentralized."*
 
@@ -13,7 +13,7 @@ and a live web dashboard running a PiedTube-style streaming demo.
 |---|---|
 | Headless P2P node | done (`pipernet/node.py`) |
 | **Crypto primitives (Curve25519)** | **done — RFC 7748 X25519 (Montgomery ladder, vector-verified), RFC 8439 ChaCha20+Poly1305 AEAD, RFC 5869 HKDF — all pure stdlib (`pipernet/crypto.py`); wire-level session encryption is the next slice** |
-| Encrypted connections | primitives landed (`pipernet/crypto.py`); wire framing in place (TCP); QUIC/TLS is a listed non-goal for this slice |
+| Encrypted connections | done — per-connection X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (`pipernet/protocol.py`); the handshake now proves static node identity and clients pin it (TOFU) |
 | Distributed chunking & hashing | done — 1 MB chunks, SHA-256 CIDs (`pipernet/chunking.py`) |
 | **Erasure coding (8 data + 4 parity)** | **done — Cauchy RS over GF(2^8), stdlib-only (`pipernet/erasure.py`); 1.5x storage overhead vs replication's 3x; any 4 shard losses per chunk are survivable** |
 | Multi-peer replication | done — configurable replica factor (default mode) |
@@ -89,7 +89,7 @@ asyncio.run(main())
 | `port` | `0` | bind port; `0` = auto-pick. After `start()`, `node.port` holds the real port |
 | `replication` | `3` | replication factor (replication mode) |
 | `mode` | `"replication"` | `"erasure"` switches to Reed-Solomon 8+4 shards per chunk (1.5x overhead, survives any 4 shard losses per chunk) |
-| `secure` | `False` | encrypts every connection: per-connection X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (RFC 8439). Insecure peers talking to a secure node fail the handshake and get rejected |
+| `secure` | `False` | encrypts every connection: X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (RFC 8439). The handshake proves the peer's static identity key; clients pin it on first contact (TOFU) and impostors are rejected thereafter. Optional `identity=(priv, pub)` restores/reuses a keypair |
 
 ### Dashboard & HTTP API
 
@@ -153,5 +153,5 @@ Replication targets are restored automatically when nodes die.
 
 - QUIC transport (lsquic / `aioquic`) with mandatory end-to-end encryption
 - PiedPiperCoin service accounting (proof-of-service receipts, anti-Sybil)
-- Portable keypair identity (client-side keypairs, sovereign profiles)
+- Portable keypair identity persisted to disk (node identity keys are currently in-memory per process)
 - Distributed origins: repair without a dedicated origin node (currently origin-only shard re-encoding)

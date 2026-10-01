@@ -93,19 +93,72 @@ def x25519_shared(priv: bytes, peer_pub: bytes) -> bytes:
 # ChaCha20 (RFC 8439)
 # ---------------------------------------------------------------------------
 
-def _quarter_round(state, a, b, c, d):
-    state[a] = (state[a] + state[b]) & 0xFFFFFFFF
-    state[d] ^= state[a]
-    state[d] = (state[d] << 16 & 0xFFFFFFFF) | (state[d] >> 16)
-    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
-    state[b] ^= state[c]
-    state[b] = (state[b] << 12 & 0xFFFFFFFF) | (state[b] >> 20)
-    state[a] = (state[a] + state[b]) & 0xFFFFFFFF
-    state[d] ^= state[a]
-    state[d] = (state[d] << 8 & 0xFFFFFFFF) | (state[d] >> 24)
-    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
-    state[b] ^= state[c]
-    state[b] = (state[b] << 7 & 0xFFFFFFFF) | (state[b] >> 25)
+def _keystream_block(x0, x1, x2, x3, x4, x5, x6, x7,
+                     x8, x9, x10, x11, x12, x13, x14, x15, M):
+    """One ChaCha20 block (20 rounds) -> (x0..x15)+state packed as one 64-byte int.
+
+    Straight-line: no list indexing, no function calls in the hot loop."""
+    y0, y1, y2, y3 = x0, x1, x2, x3
+    y4, y5, y6, y7 = x4, x5, x6, x7
+    y8, y9, y10, y11 = x8, x9, x10, x11
+    y12, y13, y14, y15 = x12, x13, x14, x15
+    for _ in range(10):
+        # column rounds
+        t = (x0 + x4) & M; x12 ^= t; x12 = ((x12 << 16) & M) | (x12 >> 16)
+        u = (x8 + x12) & M; x4 ^= u; x4 = ((x4 << 12) & M) | (x4 >> 20)
+        t = (t + x4) & M; x12 ^= t; x12 = ((x12 << 8) & M) | (x12 >> 24)
+        u = (u + x12) & M; x4 ^= u; x4 = ((x4 << 7) & M) | (x4 >> 25)
+        x0, x8 = t, u
+
+        t = (x1 + x5) & M; x13 ^= t; x13 = ((x13 << 16) & M) | (x13 >> 16)
+        u = (x9 + x13) & M; x5 ^= u; x5 = ((x5 << 12) & M) | (x5 >> 20)
+        t = (t + x5) & M; x13 ^= t; x13 = ((x13 << 8) & M) | (x13 >> 24)
+        u = (u + x13) & M; x5 ^= u; x5 = ((x5 << 7) & M) | (x5 >> 25)
+        x1, x9 = t, u
+
+        t = (x2 + x6) & M; x14 ^= t; x14 = ((x14 << 16) & M) | (x14 >> 16)
+        u = (x10 + x14) & M; x6 ^= u; x6 = ((x6 << 12) & M) | (x6 >> 20)
+        t = (t + x6) & M; x14 ^= t; x14 = ((x14 << 8) & M) | (x14 >> 24)
+        u = (u + x14) & M; x6 ^= u; x6 = ((x6 << 7) & M) | (x6 >> 25)
+        x2, x10 = t, u
+
+        t = (x3 + x7) & M; x15 ^= t; x15 = ((x15 << 16) & M) | (x15 >> 16)
+        u = (x11 + x15) & M; x7 ^= u; x7 = ((x7 << 12) & M) | (x7 >> 20)
+        t = (t + x7) & M; x15 ^= t; x15 = ((x15 << 8) & M) | (x15 >> 24)
+        u = (u + x15) & M; x7 ^= u; x7 = ((x7 << 7) & M) | (x7 >> 25)
+        x3, x11 = t, u
+
+        # diagonal rounds
+        t = (x0 + x5) & M; x15 ^= t; x15 = ((x15 << 16) & M) | (x15 >> 16)
+        u = (x10 + x15) & M; x5 ^= u; x5 = ((x5 << 12) & M) | (x5 >> 20)
+        t = (t + x5) & M; x15 ^= t; x15 = ((x15 << 8) & M) | (x15 >> 24)
+        u = (u + x15) & M; x5 ^= u; x5 = ((x5 << 7) & M) | (x5 >> 25)
+        x0, x10 = t, u
+
+        t = (x1 + x6) & M; x12 ^= t; x12 = ((x12 << 16) & M) | (x12 >> 16)
+        u = (x11 + x12) & M; x6 ^= u; x6 = ((x6 << 12) & M) | (x6 >> 20)
+        t = (t + x6) & M; x12 ^= t; x12 = ((x12 << 8) & M) | (x12 >> 24)
+        u = (u + x12) & M; x6 ^= u; x6 = ((x6 << 7) & M) | (x6 >> 25)
+        x1, x11 = t, u
+
+        t = (x2 + x7) & M; x13 ^= t; x13 = ((x13 << 16) & M) | (x13 >> 16)
+        u = (x8 + x13) & M; x7 ^= u; x7 = ((x7 << 12) & M) | (x7 >> 20)
+        t = (t + x7) & M; x13 ^= t; x13 = ((x13 << 8) & M) | (x13 >> 24)
+        u = (u + x13) & M; x7 ^= u; x7 = ((x7 << 7) & M) | (x7 >> 25)
+        x2, x8 = t, u
+
+        t = (x3 + x4) & M; x14 ^= t; x14 = ((x14 << 16) & M) | (x14 >> 16)
+        u = (x9 + x14) & M; x4 ^= u; x4 = ((x4 << 12) & M) | (x4 >> 20)
+        t = (t + x4) & M; x14 ^= t; x14 = ((x14 << 8) & M) | (x14 >> 24)
+        u = (u + x14) & M; x4 ^= u; x4 = ((x4 << 7) & M) | (x4 >> 25)
+        x3, x9 = t, u
+
+    return ((((x0 + y0) & M)
+            | (((x1 + y1) & M) << 32) | (((x2 + y2) & M) << 64) | (((x3 + y3) & M) << 96)
+            | (((x4 + y4) & M) << 128) | (((x5 + y5) & M) << 160) | (((x6 + y6) & M) << 192)
+            | (((x7 + y7) & M) << 224) | (((x8 + y8) & M) << 256) | (((x9 + y9) & M) << 288)
+            | (((x10 + y10) & M) << 320) | (((x11 + y11) & M) << 352) | (((x12 + y12) & M) << 384)
+            | (((x13 + y13) & M) << 416) | (((x14 + y14) & M) << 448) | (((x15 + y15) & M) << 480)))
 
 
 def chacha20_xor(key: bytes, counter: int, nonce: bytes, data: bytes) -> bytes:
@@ -114,25 +167,31 @@ def chacha20_xor(key: bytes, counter: int, nonce: bytes, data: bytes) -> bytes:
         raise ValueError("ChaCha20 key must be 32 bytes")
     if len(nonce) != 12:
         raise ValueError("ChaCha20 nonce must be 12 bytes")
-    const = [0x61707865, 0x3320646E, 0x79622D32, 0x6B206574]
-    kwords = [int.from_bytes(key[i : i + 4], "little") for i in range(0, 32, 4)]
-    nwords = [int.from_bytes(nonce[i : i + 4], "little") for i in range(0, 12, 4)]
-    out = bytearray()
-    for block_index in range((len(data) + 63) // 64):
-        state = const + kwords + [((counter + block_index) & 0xFFFFFFFF)] + nwords
-        work = list(state)
-        for _ in range(10):
-            _quarter_round(work, 0, 4, 8, 12)
-            _quarter_round(work, 1, 5, 9, 13)
-            _quarter_round(work, 2, 6, 10, 14)
-            _quarter_round(work, 3, 7, 11, 15)
-            _quarter_round(work, 0, 5, 10, 15)
-            _quarter_round(work, 1, 6, 11, 12)
-            _quarter_round(work, 2, 7, 8, 13)
-            _quarter_round(work, 3, 4, 9, 14)
-        for s, w in zip(state, work):
-            out += (((s + w) & 0xFFFFFFFF).to_bytes(4, "little"))
-    return bytes(a ^ b for a, b in zip(data, bytes(out)))
+    n = len(data)
+    if n == 0:
+        return b""
+    M = 0xFFFFFFFF
+    c0, c1, c2, c3 = 0x61707865, 0x3320646E, 0x79622D32, 0x6B206574
+    k0 = int.from_bytes(key[0:4], "little");  k1 = int.from_bytes(key[4:8], "little")
+    k2 = int.from_bytes(key[8:12], "little"); k3 = int.from_bytes(key[12:16], "little")
+    k4 = int.from_bytes(key[16:20], "little"); k5 = int.from_bytes(key[20:24], "little")
+    k6 = int.from_bytes(key[24:28], "little"); k7 = int.from_bytes(key[28:32], "little")
+    m0 = int.from_bytes(nonce[0:4], "little")
+    m1 = int.from_bytes(nonce[4:8], "little")
+    m2 = int.from_bytes(nonce[8:12], "little")
+
+    blocks = (n + 63) >> 6
+    ks = bytearray()
+    for bi in range(blocks):
+        x0, x1, x2, x3 = c0, c1, c2, c3
+        x4, x5, x6, x7 = k0, k1, k2, k3
+        x8, x9, x10, x11 = k4, k5, k6, k7
+        x12 = (counter + bi) & M
+        x13, x14, x15 = m0, m1, m2
+        ks += _keystream_block(x0, x1, x2, x3, x4, x5, x6, x7,
+                               x8, x9, x10, x11, x12, x13, x14, x15, M).to_bytes(64, "little")
+    return (int.from_bytes(bytes(ks[:n]), "little")
+            ^ int.from_bytes(data, "little")).to_bytes(n, "little")
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +248,6 @@ def aead_chacha20_poly1305_open(key: bytes, nonce: bytes, sealed: bytes, aad: by
     if not hmac.compare_digest(poly1305(otk, mac_data), tag):
         raise ValueError("AEAD tag mismatch — frame was tampered with")
     return chacha20_xor(key, 1, nonce, ct)
-
-
-def chacha20_aead_seal(key: bytes, nonce: bytes, data: bytes) -> bytes:
-    """Encrypt with ChaCha20(counter=1) + raw Poly1305 tag of the plaintext."""
-    assert len(nonce) == 12
-    ct = chacha20_xor(key, 1, nonce, data)
-    return ct + poly1305(key, data)
 
 
 # ---------------------------------------------------------------------------

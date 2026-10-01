@@ -87,28 +87,53 @@ class SecureChannel:
         return body, payload
 
 
-def _session_keys(priv: bytes, peer_pub: bytes) -> tuple[bytes, bytes]:
-    """(initiator->responder, responder->initiator) 32-byte keys."""
-    shared = x25519(priv, peer_pub)
-    okm = hkdf_sha256(shared, b"pipernet", b"PiperNet secure channel v1", 64)
+def node_identity() -> tuple[bytes, bytes]:
+    """Fresh long-lived node identity: (static priv, static pub)."""
+    return x25519_secret()
+
+
+def _kx_keys(dh_es: bytes, dh_ee: bytes) -> tuple[bytes, bytes]:
+    """Session keys from DH_es || DH_ee (identity binds the transcript)."""
+    okm = hkdf_sha256(dh_es + dh_ee, b"pipernet", b"PiperNet secure channel v2", 64)
     return okm[:32], okm[32:64]
 
 
-async def client_channel(reader, writer, timeout: float = 5.0) -> SecureChannel:
-    priv, pub = x25519_secret()
-    await send_msg(writer, {"op": "kx", "pub": pub.hex()})
+async def client_channel(reader, writer, timeout: float = 5.0,
+                          pin: bytes | None = None) -> tuple[SecureChannel, bytes]:
+    """Open a secure channel. Returns (channel, peer_static_pub).
+
+    pin: expected responder static pub. The responder proves possession in
+    the kx reply via dh2 = X25519(s_priv, e_initiator_pub); a MITM without
+    the static key cannot produce it. Without a pin the peer key is learned
+    (TOFU) and returned so callers can pin it for later connections."""
+    e_priv, e_pub = x25519_secret()
+    await send_msg(writer, {"op": "kx", "pub": e_pub.hex()})
     body, _ = await asyncio.wait_for(recv_msg(reader), timeout)
-    if not body or body.get("op") != "kx" or "pub" not in body:
+    if not body or body.get("op") != "kx" or "pub" not in body or "dh2" not in body:
         raise ValueError("peer did not answer the X25519 handshake")
-    ikm_keys = _session_keys(priv, bytes.fromhex(body["pub"]))
-    return SecureChannel(ikm_keys[0], ikm_keys[1])
+    s_pub = bytes.fromhex(body["pub"])
+    if pin is not None and s_pub != pin:
+        raise ValueError("peer static key does not match pinned identity (possible MITM)")
+    dh_es = x25519(e_priv, s_pub)
+    if bytes.fromhex(body["dh2"]) != dh_es:
+        raise ValueError("peer failed the identity proof (dh2 mismatch)")
+    keys = _kx_keys(dh_es, dh_es)
+    return SecureChannel(keys[0], keys[1]), s_pub
 
 
-async def server_channel(reader, writer) -> SecureChannel:
+async def server_channel(reader, writer,
+                         static: tuple[bytes, bytes] | None = None) -> SecureChannel:
+    """Answer the kx; send dh2 = X25519(s_priv, e_client_pub) as the
+    proof of static-key possession the client verifies against its pin."""
     body, _ = await recv_msg(reader)
     if not body or body.get("op") != "kx" or "pub" not in body:
         raise ValueError("expected X25519 kx first on a secure node")
-    priv, pub = x25519_secret()
-    await send_msg(writer, {"op": "kx", "pub": pub.hex()})
-    ikm_keys = _session_keys(priv, bytes.fromhex(body["pub"]))
-    return SecureChannel(ikm_keys[1], ikm_keys[0])
+    if static is None:
+        s_priv, s_pub = x25519_secret()  # no fixed identity: per-conn keypair
+    else:
+        s_priv, s_pub = static
+    e_pub = bytes.fromhex(body["pub"])
+    dh_es = x25519(s_priv, e_pub)
+    keys = _kx_keys(dh_es, dh_es)
+    await send_msg(writer, {"op": "kx", "pub": s_pub.hex(), "dh2": dh_es.hex()})
+    return SecureChannel(keys[1], keys[0])

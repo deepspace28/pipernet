@@ -14,6 +14,7 @@ import logging
 import time
 
 from .chunking import CHUNK_SIZE, chunk_data, cid
+from .crypto import x25519_secret
 from .erasure import ErasureCodec, InsufficientShards
 from .protocol import (
     client_channel,
@@ -33,14 +34,25 @@ class Node:
         replication: int = 3,
         mode: str = "replication",
         secure: bool = False,
+        identity: tuple[bytes, bytes] | None = None,
     ):
         if mode not in ("replication", "erasure"):
             raise ValueError("mode must be 'replication' or 'erasure'")
+        if identity is not None and (
+            len(identity) != 2
+            or len(identity[0]) != 32
+            or len(identity[1]) != 32
+        ):
+            raise ValueError("identity must be a (priv, pub) pair of 32-byte keys")
         self.host = host
         self.port = port
         self.replication = replication
         self.mode = mode
         self.secure = secure
+        # long-lived node identity (static X25519 keypair). Peers pin it after
+        # first contact (TOFU); later handshakes prove it via dh2 or fail.
+        self.static_priv, self.static_pub = identity if identity else x25519_secret()
+        self.known_ids: dict[tuple[str, int], bytes] = {}
         self.codec = ErasureCodec() if mode == "erasure" else None
         self.store: dict[str, bytes] = {}
         # erasure mode: (chunk_cid, shard_idx) -> shard bytes
@@ -93,7 +105,8 @@ class Node:
 
         try:
             if self.secure:
-                chan = await server_channel(reader, writer)
+                chan = await server_channel(reader, writer,
+                                            static=(self.static_priv, self.static_pub))
             while True:
                 if chan is not None:
                     body, payload = await chan.recv(reader)
@@ -169,9 +182,13 @@ class Node:
             return None
         try:
             if self.secure:
-                chan = await asyncio.wait_for(
-                    client_channel(reader, writer), timeout
+                pin = self.known_ids.get(addr)
+                chan, s_pub = await asyncio.wait_for(
+                    client_channel(reader, writer, pin=pin), timeout
                 )
+                if pin is None:
+                    # first contact: trust-on-first-use pin for later connections
+                    self.known_ids[addr] = s_pub
             if chan is not None:
                 await chan.send(writer, body, payload)
                 resp = await asyncio.wait_for(chan.recv(reader), timeout)
@@ -212,12 +229,11 @@ class Node:
         return None
 
     async def _chunk_holder_count(self, c: str) -> int:
-        n = 0
-        for addr in self._live_peers():
-            resp = await self._talk(addr, {"op": "has", "cid": c})
-            if resp and resp[0].get("ok"):
-                n += 1
-        return n
+        res = await asyncio.gather(*(
+            self._talk(addr, {"op": "has", "cid": c})
+            for addr in self._live_peers()
+        ))
+        return sum(1 for r in res if r and r[0].get("ok"))
 
     async def _store_shard_on(self, addr, c: str, idx: int, shard: bytes) -> bool:
         resp = await self._talk(addr, {"op": "store_shard", "cid": c, "idx": idx}, shard)
@@ -249,8 +265,11 @@ class Node:
             for u, r in self.users.items()
             if r["addr"] == (self.host, self.port)
         }
-        for addr in self._live_peers():
-            resp = await self._talk(addr, {"op": "users", "users": snap})
+        resp_list = await asyncio.gather(*(
+            self._talk(addr, {"op": "users", "users": snap})
+            for addr in self._live_peers()
+        ))
+        for resp in resp_list:
             if resp and resp[0].get("ok"):
                 for u, r in resp[0].get("users", {}).items():
                     if tuple(r["addr"]) == (self.host, self.port):
@@ -300,10 +319,11 @@ class Node:
         # unknown / unreachable: flood to peers with decremented TTL
         fwd = dict(env)
         fwd["ttl"] = env.get("ttl", 0) - 1
-        for addr in self._live_peers():
-            if owner is not None and addr == owner["addr"]:
-                continue  # already tried
-            await self._talk(addr, {"op": "msg", **fwd})
+        await asyncio.gather(*(
+            self._talk(addr, {"op": "msg", **fwd})
+            for addr in self._live_peers()
+            if owner is None or addr != owner["addr"]
+        ))
 
     async def _on_msg(self, env: dict):
         """Handle an inbound msg op: dedupe, deliver locally, relay."""
@@ -342,22 +362,24 @@ class Node:
             codec = self.codec
             for c, chunk in zip(cids, chunks):
                 shards_arr = codec.encode(chunk)
-                net_idx: set[int] = set()
                 for i, shard in enumerate(shards_arr):
                     if i < codec.data:
                         self.shards[(c, i)] = shard  # origin keeps the data blocks
-                    if i < len(targets):
-                        if await self._store_shard_on(targets[i], c, i, shard):
-                            net_idx.add(i)
+                n_targets = min(len(targets), codec.total)
+                res = await asyncio.gather(*(
+                    self._store_shard_on(targets[i], c, i, shards_arr[i])
+                    for i in range(n_targets)
+                ))
+                net_idx = {i for i, ok in enumerate(res) if ok}
                 holders[c] = len(net_idx | set(range(codec.data)))
         else:
             for c, chunk in zip(cids, chunks):
-                n = 0
-                for addr in targets[: self.replication]:
-                    if await self._store_on(addr, c, chunk):
-                        n += 1
+                res = await asyncio.gather(*(
+                    self._store_on(addr, c, chunk)
+                    for addr in targets[: self.replication]
+                ))
                 self.store[c] = chunk  # origin keeps an authoritative copy
-                holders[c] = n + 1
+                holders[c] = sum(1 for ok in res if ok) + 1
         self.manifests[file_id] = {
             "name": name,
             "size": len(data),
@@ -372,23 +394,26 @@ class Node:
         return file_id
 
     async def _broadcast_manifests(self):
-        for addr in self._live_peers():
-            await self._talk(addr, {"op": "manifest", "manifests": self.manifests})
+        await asyncio.gather(*(
+            self._talk(addr, {"op": "manifest", "manifests": self.manifests})
+            for addr in self._live_peers()
+        ))
 
     async def get(self, file_id: str):
         """Fetch + reassemble a file, verifying every chunk CID."""
         m = self.manifests.get(file_id)
         if m is None:
             return None
-        parts = []
-        for c in m["chunks"]:
+
+        async def one(c: str):
             if self.mode == "erasure":
-                parts.append(await self._get_erasure_chunk(c))
-            else:
-                data = await self._fetch_chunk(c)
-                if data is None:
-                    raise RuntimeError(f"chunk {c[:12]} unavailable on any node")
-                parts.append(data)
+                return await self._get_erasure_chunk(c)
+            data = await self._fetch_chunk(c)
+            if data is None:
+                raise RuntimeError(f"chunk {c[:12]} unavailable on any node")
+            return data
+
+        parts = await asyncio.gather(*(one(c) for c in m["chunks"]))
         return b"".join(parts)
 
     async def _get_erasure_chunk(self, c: str) -> bytes:
@@ -401,14 +426,13 @@ class Node:
                 have[i] = s
         if len(have) < codec.data:
             for addr in self._live_peers():
-                for i in range(codec.total):
-                    if i in have:
-                        continue
-                    s = await self._fetch_shard(addr, c, i)
+                if len(have) >= codec.data:
+                    break
+                missing = [i for i in range(codec.total) if i not in have]
+                got = await asyncio.gather(*(self._fetch_shard(addr, c, i) for i in missing))
+                for i, s in zip(missing, got):
                     if s is not None:
                         have[i] = s
-                        if len(have) >= codec.data:
-                            break
                 if len(have) >= codec.data:
                     break
         shards_list = [have.get(i) for i in range(codec.total)]
@@ -466,8 +490,11 @@ class Node:
             if not live:
                 continue
             net: dict[str, list[int]] = {}
-            for addr in live:
-                resp = await self._talk(addr, {"op": "has_shards", "cids": m["chunks"]})
+            res_list = await asyncio.gather(*(
+                self._talk(addr, {"op": "has_shards", "cids": m["chunks"]})
+                for addr in live
+            ))
+            for resp in res_list:
                 if resp and resp[0].get("ok"):
                     for c, idxs in resp[0].get("have", {}).items():
                         net.setdefault(c, []).extend(idxs)

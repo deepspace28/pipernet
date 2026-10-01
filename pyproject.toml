@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipernet"
-version = "0.2.0"
-description = "Pied Piper prototype V0.2 - decentralized P2P storage network core"
+version = "0.4.0"
+description = "Pied Piper prototype - decentralized P2P storage network core"
 requires-python = ">=3.10"
 
 [tool.pytest.ini_options]
