@@ -1,7 +1,8 @@
 """Minimal async HTTP dashboard for a PiperNet node.
 
 Routes:
-  GET  /                   web UI (storage + PiedTube + PiperChat)
+  GET  /                   web UI (storage + PiedTube)
+  GET  /chat               PiperChat - chat-only interface (no storage UI)
   GET  /api/status         aggregated status of every node in the demo mesh
   GET  /api/files          file index on this node
   POST /upload?name=...    raw binary body -> distributed upload
@@ -73,6 +74,8 @@ class Dashboard:
 
         if method == "GET" and path == "/":
             return 200, "text/html", PAGE.encode()
+        if method == "GET" and path == "/chat":
+            return 200, "text/html", CHAT_PAGE.encode()
         if method == "GET" and path == "/api/status":
             return 200, "application/json", json.dumps(self.mesh_status_fn(), indent=2).encode()
         if method == "GET" and path == "/api/files":
@@ -203,7 +206,7 @@ PAGE = r"""<!doctype html>
 <body>
 <header>
   <h1>&#10004; PIED PIPER &mdash; PIPERNET</h1>
-  <div class="tag">decentralized storage &middot; erasure-coded &middot; self-healing &middot; <b style="color:var(--acc)">PiperChat</b></div>
+  <div class="tag">decentralized storage &middot; erasure-coded &middot; self-healing &middot; <a href="/chat" style="color:var(--acc);text-decoration:none"><b>PiperChat &rarr;</b></a></div>
 </header>
 <main>
   <div class="col">
@@ -230,28 +233,6 @@ PAGE = r"""<!doctype html>
     <section>
       <h2>Network status</h2>
       <pre id="status">loading...</pre>
-    </section>
-  </div>
-
-  <div class="col">
-    <section>
-      <h2>PiperChat <span class="pill" id="chatwho">not signed in</span></h2>
-      <div id="signin">
-        <p class="muted">Claim a handle to chat across the mesh. Store-and-forward delivery, flood routing with dedupe &mdash; sealed end-to-end in secure mode.</p>
-        <input type="text" id="handle" placeholder="e.g. gilfoyle">
-        <button class="acc" onclick="reg()">Join</button>
-        <span id="regout" class="muted"></span>
-      </div>
-      <div id="chatui" style="display:none">
-        <div id="chatlog"></div>
-        <div id="chatbar">
-          <input type="text" id="to" placeholder="to handle">
-          <input type="text" id="text" placeholder="message text" onkeydown="if(event.key==='Enter')chat()">
-          <button class="acc" onclick="chat()">Send</button>
-        </div>
-        <div class="muted" id="chatout"></div>
-        <div class="muted" style="margin-top:8px">known handles: <span id="users">&mdash;</span></div>
-      </div>
     </section>
   </div>
 </main>
@@ -295,31 +276,121 @@ async function stream(id, name) {
   out.textContent = 'streaming ' + name;
 }
 
-/* ---- PiperChat ---- */
+/* ---- status ticker ---- */
+async function status() {
+  const r = await fetch('/api/status');
+  document.getElementById('status').textContent = JSON.stringify(await r.json(), null, 2);
+}
+listFiles(); status(); setInterval(status, 2000);
+if (me) { document.getElementById('handle').value = me; }
+</script>
+</body>
+</html>
+"""
+
+CHAT_PAGE = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PiperChat — PiperNet</title>
+<style>
+  :root { --bg:#0a1220; --panel:#101d33; --blue:#4db8ff; --acc:#00d4aa; --txt:#dbe9f7; --mut:#6f8bab; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; margin:0; display:flex; flex-direction:column; background:
+    radial-gradient(1200px 600px at 80% -10%, #12305a 0%, transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, #0e2a4a 0%, transparent 55%), var(--bg);
+    color:var(--txt); }
+  header { padding:16px 28px; border-bottom:1px solid #16304f; background:#0c1730cc; display:flex; align-items:baseline; gap:16px; }
+  header h1 { margin:0; font-size:18px; letter-spacing:3px; color:var(--blue); }
+  header .tag { color:var(--mut); font-size:12.5px; }
+  header a { color:var(--acc); text-decoration:none; font-size:12.5px; margin-left:auto; }
+  header .pill { display:inline-block; padding:2px 10px; border-radius:99px; background:#123355; color:var(--acc); font-size:11.5px; }
+  main { flex:1; display:grid; grid-template-columns:260px 1fr; gap:16px; max-width:1100px; width:100%; margin:0 auto; padding:18px 16px 22px; min-height:0; }
+  @media (max-width:800px){ main { grid-template-columns:1fr; } }
+  aside { background:var(--panel); border:1px solid #1c3557; border-radius:12px; padding:14px 16px; overflow:auto; }
+  aside h3 { margin:0 0 10px; font-size:11.5px; text-transform:uppercase; letter-spacing:2px; color:var(--blue); }
+  .user { display:block; background:#0e2440; border:1px solid #1d3c63; padding:6px 11px; border-radius:99px; margin-bottom:7px; font-size:12.5px; cursor:pointer; text-align:left; width:100%; color:var(--txt); }
+  .user:hover { border-color:var(--acc); }
+  .user.me-node { border-color:var(--acc); color:var(--acc); }
+  section { background:var(--panel); border:1px solid #1c3557; border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; min-height:0; }
+  button { background:#164a78; color:#eaf6ff; border:1px solid #2d69a8; padding:8px 14px; border-radius:7px; cursor:pointer; font-size:13.5px; }
+  button:hover { background:#1b5c94; }
+  button.acc { background:#0d5c4c; border-color:#17a085; }
+  button.acc:hover { background:#127c67; }
+  input[type=text] { padding:9px; background:#0b1626; border:1px solid #24466e; border-radius:7px; color:var(--txt); }
+  .muted { color:var(--mut); font-size:12.5px; }
+  #chatlog { display:flex; flex-direction:column; gap:8px; flex:1; min-height:0; overflow-y:auto; padding:4px 2px; }
+  .msg { max-width:78%; padding:9px 12px; border-radius:11px; font-size:14px; line-height:1.5; word-wrap:break-word; }
+  .msg .meta { font-size:10.5px; letter-spacing:.5px; opacity:.65; margin-bottom:3px; }
+  .msg.in  { background:#15304f; align-self:flex-start; border-bottom-left-radius:3px; }
+  .msg.out { background:#0d5c4c; align-self:flex-end; border-bottom-right-radius:3px; }
+  .msg.sys { background:transparent; color:var(--mut); align-self:center; font-size:11.5px; max-width:100%; }
+  #chatbar { display:flex; gap:8px; margin-top:12px; }
+  #chatbar input { flex:1; min-width:0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128172; PIPERCHAT</h1>
+  <span class="tag">flood routing &middot; store-and-forward &middot; dedupe &middot; sealed in secure mode</span>
+  <a href="/">&larr; storage dashboard</a>
+  <span class="pill" id="chatwho">not signed in</span>
+</header>
+
+<main>
+  <aside>
+    <h3>Handles on the mesh</h3>
+    <div id="users" class="muted">loading&hellip;</div>
+  </aside>
+
+  <section>
+    <div id="signin">
+      <p class="muted">Claim a handle to chat across the mesh. Messages flood-routes with TTL and dedupe, delivered store-and-forward. This page is chat-only &mdash; storage lives on the dashboard.</p>
+      <div style="display:flex; gap:8px; margin-top:12px">
+        <input type="text" id="handle" placeholder="e.g. gilfoyle" style="flex:1" onkeydown="if(event.key==='Enter')reg()">
+        <button class="acc" onclick="reg()">Join</button>
+      </div>
+      <div id="regout" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div id="chatui" style="display:none; flex:1; min-height:0; flex-direction:column">
+      <div id="chatlog"></div>
+      <div id="chatbar">
+        <input type="text" id="to" placeholder="to handle" style="max-width:180px">
+        <input type="text" id="text" placeholder="message text" onkeydown="if(event.key==='Enter')chat()">
+        <button class="acc" onclick="chat()">Send</button>
+      </div>
+      <div class="muted" id="chatout" style="margin-top:6px"></div>
+    </div>
+  </section>
+</main>
+<script>
 let me = localStorage.getItem('pp_handle') || '';
 let cursor = 0;
+
 async function reg() {
   const h = document.getElementById('handle').value.trim();
   if (!h) return;
   const r = await fetch('/register?name=' + encodeURIComponent(h), { method:'POST' });
   const out = document.getElementById('regout');
-  if (!r.ok) { out.textContent = (await r.text()) + ' — pick another'; return; }
+  if (!r.ok) { out.textContent = await r.text(); return; }
   me = h; localStorage.setItem('pp_handle', h);
   enterChat();
 }
 function enterChat() {
   document.getElementById('signin').style.display = 'none';
-  document.getElementById('chatui').style.display = 'block';
+  const ui = document.getElementById('chatui');
+  ui.style.display = 'flex';
   document.getElementById('chatwho').textContent = '@' + me;
   sys('joined the mesh as @' + me);
-  poll(); setInterval(poll, 1500); users();
+  poll(); setInterval(poll, 1500); users(); setInterval(users, 4000);
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function addmsg(m) {
   const log = document.getElementById('chatlog');
   const div = document.createElement('div');
   div.className = 'msg ' + (m.from === me ? 'out' : 'in');
-  div.innerHTML = `<div class="meta">${esc(m.from)} · ${new Date(m.ts*1000).toLocaleTimeString()}</div>${esc(m.text)}`;
+  div.innerHTML = '<div class="meta">' + esc(m.from) + ' &middot; ' + new Date(m.ts*1000).toLocaleTimeString() + '</div>' + esc(m.text);
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
 }
@@ -352,18 +423,16 @@ async function poll() {
 async function users() {
   const r = await fetch('/api/users');
   const j = await r.json();
-  const names = Object.keys(j);
-  document.getElementById('users').innerHTML = names.length
-    ? names.map(u => '<span>' + esc(u) + '</span>').join('')
-    : '&mdash;';
+  const box = document.getElementById('users');
+  const names = Object.keys(j).filter(u => u !== me);
+  box.innerHTML = names.length
+    ? names.map(u => '<button class="user" onclick="pick(\'' + encodeURIComponent(u) + '\')">' + esc(u) + '</button>').join('')
+    : 'no other handles yet — open /chat in another tab or node and sign in';
 }
-
-/* ---- status ticker ---- */
-async function status() {
-  const r = await fetch('/api/status');
-  document.getElementById('status').textContent = JSON.stringify(await r.json(), null, 2);
+function pick(h) {
+  document.getElementById('to').value = decodeURIComponent(h);
+  document.getElementById('text').focus();
 }
-listFiles(); status(); setInterval(status, 2000);
 if (me) { document.getElementById('handle').value = me; }
 </script>
 </body>

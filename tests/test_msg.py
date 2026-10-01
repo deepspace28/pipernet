@@ -277,3 +277,29 @@ def test_dashboard_handle_conflicts():
             if b.alive:
                 await b.stop()
     run(t())
+
+
+def test_chat_page_is_standalone_and_links_home():
+    async def t():
+        node = (await _mesh(1))[0]
+        dash = Dashboard(node)
+        await dash.start(port=8094)
+        try:
+            r = await http_str(dash, "GET", "/chat")
+            assert "/chat page" not in r and "PIPERCHAT" in r and "storage dashboard" in r
+            assert "PiedTube" not in r and "/api/files" not in r
+            home = await http_str(dash, "GET", "/")
+            assert "PiedTube" in home and 'href="/chat"' in home
+        finally:
+            await node.stop()
+    run(t())
+
+
+async def http_str(dash, method, path):
+    r, w = await asyncio.open_connection(dash.node.host, 8094)
+    forward = f"{method} {path} HTTP/1.1\r\nhost: x\r\n\r\n"
+    w.write(forward.encode())
+    await w.drain()
+    data = await r.read()
+    w.close()
+    return data.partition(b"\r\n\r\n")[2].decode()
