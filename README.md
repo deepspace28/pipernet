@@ -89,6 +89,7 @@ asyncio.run(main())
 | `port` | `0` | bind port; `0` = auto-pick. After `start()`, `node.port` holds the real port |
 | `replication` | `3` | replication factor (replication mode) |
 | `mode` | `"replication"` | `"erasure"` switches to Reed-Solomon 8+4 shards per chunk (1.5x overhead, survives any 4 shard losses per chunk) |
+| `key_path` | `None` | path to a persistent identity keyfile; the node loads its static identity from disk or mints + saves one on first run. Tampered files (pub/priv mismatch) refuse to load. Mutually exclusive with `identity` |
 | `secure` | `False` | encrypts every connection: X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (RFC 8439). The handshake proves the peer's static identity key; clients pin it on first contact (TOFU) and impostors are rejected thereafter. Optional `identity=(priv, pub)` restores/reuses a keypair |
 
 ### Dashboard & HTTP API
@@ -151,7 +152,6 @@ Replication targets are restored automatically when nodes die.
 
 ## Roadmap (next slice)
 
-- QUIC transport (lsquic / `aioquic`) with mandatory end-to-end encryption
 - PiedPiperCoin service accounting (proof-of-service receipts, anti-Sybil)
-- Portable keypair identity persisted to disk (node identity keys are currently in-memory per process)
+- QUIC transport (lsquic / `aioquic`) with mandatory end-to-end encryption - kept deferred while the dependency-free stance holds
 - Distributed origins: repair without a dedicated origin node (currently origin-only shard re-encoding)

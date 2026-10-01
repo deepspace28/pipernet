@@ -3,6 +3,7 @@
 from .chunking import CHUNK_SIZE, chunk_data, cid, chunk_to_cids
 from .crypto import aead_chacha20_poly1305_open, aead_chacha20_poly1305_seal, x25519_secret, x25519_shared
 from .erasure import DATA_SHARDS, PARITY_SHARDS, ErasureCodec, InsufficientShards, STRIP
+from .keyfile import create_identity, load_identity, load_or_create_identity
 from .node import Node
 from .dashboard import Dashboard
 from .protocol import SecureChannel, node_identity
@@ -15,6 +16,9 @@ __all__ = [
     "InsufficientShards",
     "SecureChannel",
     "node_identity",
+    "load_identity",
+    "create_identity",
+    "load_or_create_identity",
     "chunk_data",
     "cid",
     "chunk_to_cids",

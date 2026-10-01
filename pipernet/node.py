@@ -16,6 +16,7 @@ import time
 from .chunking import CHUNK_SIZE, chunk_data, cid
 from .crypto import x25519_secret
 from .erasure import ErasureCodec, InsufficientShards
+from .keyfile import load_or_create_identity
 from .protocol import (
     client_channel,
     recv_msg,
@@ -35,9 +36,14 @@ class Node:
         mode: str = "replication",
         secure: bool = False,
         identity: tuple[bytes, bytes] | None = None,
+        key_path: str | None = None,
     ):
         if mode not in ("replication", "erasure"):
             raise ValueError("mode must be 'replication' or 'erasure'")
+        if identity is not None and key_path is not None:
+            raise ValueError("pass either identity= or key_path=, not both")
+        if key_path is not None:
+            identity = load_or_create_identity(key_path)
         if identity is not None and (
             len(identity) != 2
             or len(identity[0]) != 32
