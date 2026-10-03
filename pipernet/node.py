@@ -16,6 +16,7 @@ import time
 from .chunking import CHUNK_SIZE, chunk_data, cid
 from .crypto import x25519_secret
 from .erasure import ErasureCodec, InsufficientShards
+from .identity import IdentityError, IdentityRegistry, env_id, verify_env
 from .keyfile import load_or_create_identity
 from .protocol import (
     client_channel,
@@ -75,6 +76,10 @@ class Node:
         self.inboxes: dict[str, list] = {}    # handle -> [envelope]
         self.seen_msgs: set[str] = set()      # msg flood dedupe
         self._msg_seq = 0
+        # PiperChat: signed, content-addressed message log + identity registry
+        self.ids = IdentityRegistry()
+        self.chat: list[dict] = []
+        self._chat_seen: set[str] = set()
 
     # ---- lifecycle -------------------------------------------------
 
@@ -156,6 +161,12 @@ class Node:
                     for u, r in body["users"].items():
                         self.users.setdefault(u, {"addr": tuple(r["addr"]), "ts": r["ts"]})
                     await reply({"ok": True, "users": self.users})
+                elif op == "chat":
+                    self._on_chat(body["env"])
+                    await reply({"ok": True})
+                elif op == "chat_fetch":
+                    since = int(body.get("since", 0))
+                    await reply({"ok": True, "chat": self.chat[since:]})
                 elif op == "msg":
                     await self._on_msg(body)
                     await reply({"ok": True})
@@ -354,6 +365,49 @@ class Node:
     def inbox(self, handle: str) -> list[dict]:
         return list(self.inboxes.get(handle, []))
 
+    # ---- PiperChat (signed identity) ---------------------------------
+
+    async def post_chat(self, name: str, pub: str, ts: str, text: str, sig: str) -> dict:
+        """Accept a browser-signed chat envelope if the key proves the message.
+
+        Signed + handle not bound to a *different* key => accepted, gossiped.
+        Anything else raises IdentityError (403 at the dashboard)."""
+        if isinstance(sig, (bytes, bytearray)):
+            sig = bytes(sig).hex()
+        env = {"name": name, "pub": pub, "ts": ts, "text": text, "sig": sig}
+        if not verify_env(env):
+            raise IdentityError("invalid signature: message rejected")
+        self.ids.bind(env)
+        mid = env_id(env)
+        if mid not in self._chat_seen:
+            self._chat_seen.add(mid)
+            self.chat.append({**env, "id": mid})
+            if len(self.chat) > 1000:
+                self.chat = self.chat[-1000:]
+            await self._gossip_chat(env)
+        return {**env, "id": mid}
+
+    async def _gossip_chat(self, env: dict):
+        op = {"op": "chat", "env": env}
+        for addr in self._live_peers():
+            await self._talk(addr, op)
+
+    def _on_chat(self, env: dict):
+        """Inbound gossip: drop anything unsigned or forged, relay the rest."""
+        if not verify_env(env) or not isinstance(env.get("ts", ""), str):
+            return
+        mid = env_id(env)
+        if mid in self._chat_seen:
+            return
+        self._chat_seen.add(mid)
+        try:
+            self.ids.bind(env)  # publish binding globally
+        except IdentityError:
+            self._chat_seen.discard(mid)
+            return  # forged handle — do not store or relay
+        self.chat.append({**env, "id": mid})
+        asyncio.get_event_loop().create_task(self._gossip_chat(env))
+
     # ---- client API -------------------------------------------------
 
     async def put(self, data: bytes, name: str = "file.bin") -> str:
@@ -445,7 +499,7 @@ class Node:
         try:
             data = codec.decode(shards_list)
         except InsufficientShards as e:
-            raise RuntimeError(f"chunk {c[:12]} unrecoverable — {e}") from None
+            raise RuntimeError(f"chunk {c[:12]} unrecoverable ??? {e}") from None
         if cid(data) != c:
             raise RuntimeError(f"chunk {c[:12]} decoded to wrong content (CID mismatch)")
         return data
