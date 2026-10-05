@@ -1,11 +1,39 @@
-# PiperNet — Pied Piper Prototype V0.4
+# PiperNet — Pied Piper Prototype V0.5
 
 > *"It's the internet, completely decentralized."*
 
 A working prototype of the Pied Piper deck: a headless P2P node,
 content-addressed distributed storage, **Reed-Solomon erasure coding
 (8+4)**, multi-peer replication, failure detection, automatic self-healing,
-and a live web dashboard running a PiedTube-style streaming demo.
+and a live web dashboard running a PiedTube-style streaming demo and
+PiperChat messaging.
+
+## Download & run
+
+Requires Python 3.10+ (standard library only, no third-party dependencies).
+
+```bash
+# 1. Get the code
+git clone https://github.com/deepspace28/pipernet.git
+cd pipernet
+
+# 2. (Optional) install as a package
+pip install -e .
+
+# 3a. Run the full P2P demo with the dashboard (PiedTube UI)
+py demo/resiliency_demo.py --serve
+#    -> dashboard: http://127.0.0.1:8080/
+
+# 3b. Or run the erasure-coded variant
+py demo/resiliency_demo.py --erasure --serve
+```
+
+Then open in your browser:
+
+| UI | URL |
+|---|---|
+| PiedTube (storage + streaming dashboard) | `http://127.0.0.1:8080/` |
+| PiperChat (chat) | `http://127.0.0.1:8080/chat` |
 
 ## Core scope
 
