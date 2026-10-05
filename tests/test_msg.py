@@ -303,3 +303,80 @@ async def http_str(dash, method, path):
     data = await r.read()
     w.close()
     return data.partition(b"\r\n\r\n")[2].decode()
+
+
+def test_dashboard_chat_rejects_unsigned():
+    """Unsigned/garbage chat traffic is rejected with 403; log reads are fine."""
+    async def t():
+        a, b = await _mesh(2)
+        try:
+            dash = Dashboard(a)
+            await dash.start(port=8095)
+
+            async def http(port, method, target, body=b""):
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                req = f"{method} {target} HTTP/1.1\r\nhost: x\r\n"
+                if body:
+                    req += f"content-length: {len(body)}\r\n"
+                    req += "content-type: application/json\r\n"
+                req += "\r\n"
+                w.write(req.encode() + body)
+                await w.drain()
+                data = await r.read()
+                w.close()
+                head, _, rest = data.partition(b"\r\n\r\n")
+                code = int(head.split(b" ")[1].split(b"\r\n")[0])
+                return code, rest
+
+            payload = json.dumps({"name": "spoof", "pub": "", "ts": "1", "text": "hi", "sig": ""}).encode()
+            code, txt = await http(8095, "POST", "/api/chat", payload)
+            assert code == 403, txt
+
+            code, _ = await http(8095, "GET", "/api/chat?since=0")
+            assert code == 200
+        finally:
+            for n in (a, b):
+                await n.stop()
+    run(t())
+
+
+def test_dashboard_signed_chat_flow_via_http():
+    async def t():
+        from signer import make_keypair, signed_envelope
+
+        a, b = await _mesh(2)
+        try:
+            dash = Dashboard(a)
+            await dash.start(port=8096)
+
+            async def http(port, method, target, body=b""):
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                req = f"{method} {target} HTTP/1.1\r\nhost: x\r\n"
+                if body:
+                    req += f"content-length: {len(body)}\r\n"
+                req += "\r\n"
+                w.write(req.encode() + body)
+                await w.drain()
+                data = await r.read()
+                w.close()
+                head, _, rest = data.partition(b"\r\n\r\n")
+                code = int(head.split(b" ")[1].split(b"\r\n")[0])
+                return code, rest
+
+            d, pub = make_keypair()
+            env = signed_envelope("richard", "dashboard chat", "1700000000100", d, pub)
+            code, rest = await http(8096, "POST", "/api/chat", json.dumps(env).encode())
+            assert code == 200, rest
+
+            await asyncio.sleep(0.3)  # gossip settle
+            assert a.ids.owner_of("richard") == pub.hex()
+
+            d2, pub2 = make_keypair()
+            env2 = signed_envelope("richard", "hi, actually", "1700000000101", d2, pub2)
+            code, txt = await http(8096, "POST", "/api/chat", json.dumps(env2).encode())
+            assert code == 403
+            assert b"belongs to a different key" in txt
+        finally:
+            for n in (a, b):
+                await n.stop()
+    run(t())

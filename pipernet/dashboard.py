@@ -18,6 +18,7 @@ import html
 import json
 import urllib.parse
 
+from .identity import IdentityError
 from .chunking import cid
 
 _PAGES = {}
@@ -156,6 +157,27 @@ class Dashboard:
                     u: {"addr": list(r["addr"]), "ts": r["ts"], "local": r["addr"] == (self.node.host, self.node.port)}
                     for u, r in self.node.users.items()
                 }
+            ).encode()
+        if method == "POST" and path == "/api/chat":
+            try:
+                m = json.loads(body.decode() or "{}")
+            except json.JSONDecodeError:
+                return 400, "text/plain", b"bad json"
+            try:
+                saved = await self.node.post_chat(
+                    str(m.get("name", "")),
+                    str(m.get("pub", "")),
+                    str(m.get("ts", "")),
+                    str(m.get("text", "")),
+                    str(m.get("sig", "")),
+                )
+            except IdentityError as e:
+                return 403, "text/plain", str(e).encode()
+            return 200, "application/json", json.dumps(saved).encode()
+        if method == "GET" and path == "/api/chat":
+            since = int((qs.get("since") or ["0"])[0])
+            return 200, "application/json", json.dumps(
+                {"chat": self.node.chat[since:], "n": len(self.node.chat)}
             ).encode()
         return 404, "text/plain", b"not found"
 
