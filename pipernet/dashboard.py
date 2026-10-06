@@ -38,7 +38,12 @@ class Dashboard:
         self.mesh_status_fn = mesh_status_fn or node.status
 
     async def start(self, host="127.0.0.1", port=8080):
-        self._server = await asyncio.start_server(self._handle, host, port)
+        try:
+            self._server = await asyncio.start_server(self._handle, host, port)
+        except OSError:
+            if port == 0:
+                raise
+            self._server = await asyncio.start_server(self._handle, host, 0)
         return self._server.sockets[0].getsockname()[1]
 
     async def _handle(self, reader, writer):
