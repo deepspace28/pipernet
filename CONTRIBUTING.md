@@ -53,8 +53,6 @@ py demo/resiliency_demo.py
 py demo/resiliency_demo.py --erasure
 ```
 
-If it passes those, your environment is ready.
-
 ## Submitting Issues
 
 If you find a bug or have a feature idea, we'd love to hear from you!
