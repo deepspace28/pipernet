@@ -286,13 +286,85 @@ def test_chat_page_is_standalone_and_links_home():
         await dash.start(port=8094)
         try:
             r = await http_str(dash, "GET", "/chat")
-            assert "/chat page" not in r and "PIPERCHAT" in r and "storage dashboard" in r
+            assert "/chat page" not in r and "PiperChat" in r and "storage dashboard" in r
             assert "PiedTube" not in r and "/api/files" not in r
             home = await http_str(dash, "GET", "/")
             assert "PiedTube" in home and 'href="/chat"' in home
         finally:
             await node.stop()
     run(t())
+
+
+def test_dashboard_scripts_reference_only_declared_identifiers():
+    """Every script an inline page runs must parse and resolve.
+
+    The dashboard once ended with `if (me) {...}` — `me` exists only on
+    /chat, so the storage page raised `ReferenceError: me is not defined`
+    on every load, after the initial paint and silently. No HTTP assertion
+    catches that: the response is a perfectly valid 200.
+
+    Cheap static guard instead: every identifier the page reads must be
+    declared in that same page, a browser global, or a `var`/`let`/`const`
+    in scope. Catches the whole class, not just this instance.
+    """
+    import re
+    from pipernet import dashboard
+
+    globals_ = {"fetch", "setInterval", "setTimeout", "clearInterval", "clearTimeout",
+                "alert", "confirm", "prompt", "encodeURIComponent", "decodeURIComponent",
+                "URL", "document", "window", "console", "JSON", "Math", "Date", "Object",
+                "Array", "String", "Number", "Boolean", "RegExp", "Error", "Promise",
+                "parseInt", "parseFloat", "isNaN", "escape", "unescape", "navigator",
+                "location", "history", "Blob", "FormData", "Uint8Array", "Map", "Set",
+                "Symbol", "Infinity", "NaN", "undefined", "null", "true", "false",
+                "localStorage", "sessionStorage", "screen", "performance", "crypto",
+                "requestAnimationFrame", "cancelAnimationFrame", "structuredClone"}
+    keywords = {"if", "for", "while", "return", "function", "var", "let", "const", "new",
+                "typeof", "await", "async", "case", "do", "else", "switch", "throw", "try",
+                "catch", "finally", "in", "of", "delete", "void", "instanceof", "this",
+                "true", "false", "undefined", "null", "class", "extends", "super", "yield",
+                "break", "continue", "default", "static", "get", "set", "with"}
+
+    def undeclared(page):
+        js = page[page.index("<script>") + len("<script>"):page.rindex("</script>")]
+        # Blank out comments and literals first: the pages are mostly HTML in
+        # template strings, and `element`/`method` are not bindings.
+        js = re.sub(r"//[^\n]*|/\*.*?\*/", " ", js, flags=re.S)
+        js = re.sub(r"`(?:\\.|[^`\\])*`", "``", js, flags=re.S)
+        js = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", js)
+        js = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', js)
+
+        declared = set(re.findall(r"(?:var|let|const|function|class)\s+([A-Za-z_$][\w$]*)", js))
+        for pattern in (r"(?:var|let|const)\s*\{([^}]*)\}", r"(?:var|let|const)\s*\[([^\]]*)\]"):
+            for group in re.findall(pattern, js):
+                declared |= {p.split(":")[-1].strip() for p in group.split(",") if p.strip()}
+        # Params ONLY, from an arrow's `(...)` or a group after `function`.
+        # A bare `(...)` is a call site: reading its arguments as bindings
+        # would make `if (me)` declare `me` and hide the bug under test.
+        for group in (re.findall(r"\(([^()]*)\)\s*=>", js)
+                      + re.findall(r"function\s*\w*\s*\(([^()]*)\)", js)):
+            for part in group.split(","):
+                part = part.split(":")[-1].split("=")[0].strip().lstrip(".")
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", part):
+                    declared.add(part)
+        declared |= set(re.findall(r"([A-Za-z_$][\w$]*)\s*=>", js))
+        # Object-literal keys, `key:` form only. A looser `name [,})]` variant
+        # also matched call arguments like `if (me)`, declaring the very
+        # identifier the test exists to catch.
+        declared |= set(re.findall(r"[{,(\s]([A-Za-z_$][\w$]*)\s*:", js))
+
+        used = set(re.findall(r"(?<![\w$.])([A-Za-z_$][\w$]*)", js))
+        return sorted(used - declared - globals_ - keywords)
+
+    for name, page in (("PAGE", dashboard.PAGE), ("CHAT_PAGE", dashboard.CHAT_PAGE)):
+        assert not undeclared(page), f"{name} references undeclared identifiers"
+
+    # The guard must actually fail on the bug it was written for.
+    regression = dashboard.PAGE.replace(
+        "listFiles(); status(); setInterval(status, 2000);",
+        "listFiles(); status(); setInterval(status, 2000);\n"
+        "if (me) { document.getElementById('handle').value = me; }")
+    assert undeclared(regression) == ["me"]
 
 
 async def http_str(dash, method, path):
