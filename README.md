@@ -10,7 +10,7 @@ PiperChat messaging.
 
 ## Download & run
 
-Requires Python 3.10+ (standard library only, no third-party dependencies).
+Requires Python 3.10+ .
 
 ```bash
 # 1. Get the code
