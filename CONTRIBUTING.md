@@ -1,7 +1,7 @@
 # ⚡ Contributing to PiperNet
 
 Thank you for using PiperNet and for wanting to make it better! All
-contributions are welcome — code, bug reports, ideas, documentation, or
+contributions are welcome — code, bug reports, ideas, documentation
 just spreading the word about the project. 🔥
 
 - **Report Bugs**: Identify and resolve issues with the existing codebase.
