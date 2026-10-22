@@ -223,6 +223,10 @@ def poly1305_key_gen(key: bytes, nonce: bytes) -> bytes:
 
 def aead_chacha20_poly1305_seal(key: bytes, nonce: bytes, plaintext: bytes, aad: bytes = b"") -> bytes:
     """RFC 8439 sec 2.8 AEAD_CHACHA20_POLY1305 -> ciphertext || 16-byte tag."""
+    if len(key) != 32:
+        raise ValueError("AEAD key must be 32 bytes")
+    if len(nonce) != 12:
+        raise ValueError("AEAD nonce must be 12 bytes")
     otk = poly1305_key_gen(key, nonce)
     ct = chacha20_xor(key, 1, nonce, plaintext)
     mac_data = (
@@ -235,6 +239,10 @@ def aead_chacha20_poly1305_seal(key: bytes, nonce: bytes, plaintext: bytes, aad:
 
 
 def aead_chacha20_poly1305_open(key: bytes, nonce: bytes, sealed: bytes, aad: bytes = b"") -> bytes:
+    if len(key) != 32:
+        raise ValueError("AEAD key must be 32 bytes")
+    if len(nonce) != 12:
+        raise ValueError("AEAD nonce must be 12 bytes")
     if len(sealed) < 16:
         raise ValueError("sealed frame too short")
     ct, tag = sealed[:-16], sealed[-16:]
@@ -255,6 +263,8 @@ def aead_chacha20_poly1305_open(key: bytes, nonce: bytes, sealed: bytes, aad: by
 # ---------------------------------------------------------------------------
 
 def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, length: int = 32) -> bytes:
+    if length < 1:
+        raise ValueError("HKDF output length must be positive")
     prk = hmac.new(salt or b"\x00" * 32, ikm, hashlib.sha256).digest()
     t = b""
     okm = b""
