@@ -73,6 +73,8 @@ class InsufficientShards(ValueError):
 
 class ErasureCodec:
     def __init__(self, data_shards: int = DATA_SHARDS, parity_shards: int = PARITY_SHARDS):
+        if data_shards < 1 or parity_shards < 1:
+            raise ValueError("shard counts must be positive")
         if data_shards > 128 or parity_shards > 128:
             raise ValueError("shard counts must stay below GF field sanity limits")
         self.data = data_shards
