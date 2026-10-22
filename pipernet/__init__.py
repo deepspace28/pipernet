@@ -8,7 +8,7 @@ from .node import Node
 from .dashboard import Dashboard
 from .protocol import SecureChannel, node_identity
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     "Node",
     "Dashboard",
@@ -26,4 +26,8 @@ __all__ = [
     "DATA_SHARDS",
     "PARITY_SHARDS",
     "STRIP",
+    "aead_chacha20_poly1305_open",
+    "aead_chacha20_poly1305_seal",
+    "x25519_secret",
+    "x25519_shared",
 ]
