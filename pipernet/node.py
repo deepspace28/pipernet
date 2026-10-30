@@ -460,20 +460,27 @@ class Node:
         ))
 
     async def get(self, file_id: str):
-        """Fetch + reassemble a file, verifying every chunk CID."""
+        """Fetch + reassemble a file, verifying every chunk CID.
+
+        Returns None if any chunk is unrecoverable (dead peers, lost shards)
+        instead of raising — callers (e.g. the dashboard /stream) treat None
+        as "cannot reconstruct."
+        """
         m = self.manifests.get(file_id)
         if m is None:
             return None
 
         async def one(c: str):
             if self.mode == "erasure":
-                return await self._get_erasure_chunk(c)
-            data = await self._fetch_chunk(c)
-            if data is None:
-                raise RuntimeError(f"chunk {c[:12]} unavailable on any node")
-            return data
+                try:
+                    return await self._get_erasure_chunk(c)
+                except RuntimeError:
+                    return None  # unrecoverable / corrupt chunk
+            return await self._fetch_chunk(c)  # None if no holder has it
 
         parts = await asyncio.gather(*(one(c) for c in m["chunks"]))
+        if any(p is None for p in parts):
+            return None
         return b"".join(parts)
 
     async def _get_erasure_chunk(self, c: str) -> bytes:

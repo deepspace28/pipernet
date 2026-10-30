@@ -19,6 +19,7 @@ import secrets
 P = 2**255 - 19
 A24 = 121665  # (A - 2) / 2 for the Montgomery curve y^2 = x^3 + 486662x^2 + x
 _BASE = (9).to_bytes(32, "little")
+_HKDF_MAX_LENGTH = 255 * hashlib.sha256().digest_size
 
 # ---------------------------------------------------------------------------
 # X25519 (RFC 7748)
@@ -269,6 +270,8 @@ def aead_chacha20_poly1305_open(key: bytes, nonce: bytes, sealed: bytes, aad: by
 def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, length: int = 32) -> bytes:
     if length < 1:
         raise ValueError("HKDF output length must be positive")
+    if length > _HKDF_MAX_LENGTH:
+        raise ValueError(f"HKDF output length must not exceed {_HKDF_MAX_LENGTH} bytes")
     prk = hmac.new(salt or b"\x00" * 32, ikm, hashlib.sha256).digest()
     t = b""
     okm = b""
