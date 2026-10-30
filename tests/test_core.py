@@ -108,6 +108,25 @@ def test_get_unknown_file():
     run(t())
 
 
+def test_get_returns_none_when_chunks_unrecoverable():
+    """get() must not raise when every holder is dead; it returns None."""
+    async def t():
+        nodes = await _mesh(6, replication=1)
+        try:
+            data = os.urandom(1024 + 5)
+            fid = await nodes[0].put(data, name="gone.bin")
+            # nodes[2] has the manifest (broadcast) but stores no chunk;
+            # kill origin (local copy) and the single replica holder
+            await nodes[0].stop(); nodes[0].alive = False
+            await nodes[1].stop(); nodes[1].alive = False
+            assert await nodes[2].get(fid) is None
+        finally:
+            for n in nodes[2:]:
+                if n.alive:
+                    await n.stop()
+    run(t())
+
+
 def test_status_shape():
     async def t():
         node = await Node().start()
