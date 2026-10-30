@@ -5,6 +5,8 @@ import os
 import random
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pipernet import DATA_SHARDS, PARITY_SHARDS, ErasureCodec, InsufficientShards, Node, cid
@@ -185,3 +187,40 @@ def test_erasure_repair_restores_shards():
                 if n.alive:
                     await n.stop()
     asyncio.run(t())
+
+
+def test_decode_shard_length_mismatch_raises():
+    c = _codec()
+    shards = c.encode(b"x" * 5000)
+    bad = list(shards)
+    bad[0] = bad[0] + b"\x00"  # one shard wrong length
+    try:
+        c.decode(bad)
+        raise AssertionError("mismatched shard length accepted")
+    except ValueError as e:
+        assert "length" in str(e)
+
+
+def test_decode_insufficient_shards_pytest():
+    c = _codec()
+    shards = c.encode(b"x" * 5000)
+    # leave only the parity shards -> fewer than data shards present
+    lost = set(range(c.data + 1))
+    with pytest.raises(InsufficientShards):
+        c.decode([None if i in lost else s for i, s in enumerate(shards)])
+
+
+def test_encode_decode_strip_boundary():
+    c = _codec()
+    for size in [STRIP - 1, STRIP, STRIP + 1, 2 * STRIP - 1]:
+        data = os.urandom(size)
+        assert c.decode(c.encode(data)) == data, f"size {size} roundtrip failed"
+
+
+def test_regenerate_parity_wrong_arity_raises():
+    c = _codec()
+    try:
+        c.regenerate_parity(c.encode(b"x")[: c.data - 1])
+        raise AssertionError("wrong arity accepted")
+    except ValueError:
+        pass
