@@ -81,33 +81,6 @@ What the demo does:
 ## Use it in code
 
 PiperNet is a library first — the demo is just one mesh topology. Spawn
-your own and put/get bytes across it:
-
-```python
-import asyncio
-from pipernet import Node
-
-async def main():
-    # start nodes; port=0 picks a free ephemeral port automatically
-    origin  = await Node().start()                      # replication mode, factor 3
-    mirror  = await Node().start()
-    client  = await Node().start()
-
-    # full mesh wiring (peers must know each other both ways)
-    for a, b in ((origin, mirror), (origin, client), (mirror, client)):
-        a.add_peer((b.host, b.port))
-        b.add_peer((a.host, a.port))
-
-    file_id = await origin.put(b"middle-out compression rocks", name="note.txt")
-    data = await client.get(file_id)     # fetched from any surviving holder,
-                                         # CID-verified on receipt; None if
-                                         # unrecoverable
-    assert data == b"middle-out compression rocks"
-
-    await client.stop(); await mirror.stop(); await origin.stop()
-
-asyncio.run(main())
-```
 
 ### Node options
 
