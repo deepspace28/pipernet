@@ -41,6 +41,8 @@ class Node:
     ):
         if mode not in ("replication", "erasure"):
             raise ValueError("mode must be 'replication' or 'erasure'")
+        if isinstance(replication, bool) or not isinstance(replication, int) or replication < 1:
+            raise ValueError("replication must be a positive integer")
         if identity is not None and key_path is not None:
             raise ValueError("pass either identity= or key_path=, not both")
         if key_path is not None:
