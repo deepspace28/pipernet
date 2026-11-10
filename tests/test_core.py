@@ -128,3 +128,26 @@ def test_node_async_context_manager():
             assert s["chunks"] == 0
         assert node.alive is False
     run(t())
+
+
+def test_node_init_validation():
+    try:
+        Node(replication=0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    try:
+        Node(replication=True)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    try:
+        Node(mode="bogus")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    try:
+        Node(identity=(b"\x00" * 32, b"\x00" * 32), key_path="x.key")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

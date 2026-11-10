@@ -5,7 +5,7 @@ Used to fake-browser-test the PiperChat identity layer."""
 import hashlib
 import secrets
 
-from pipernet.ecdsa import N, P, Gx, Gy, _add, _mul
+from pipernet.ecdsa import N, Gx, Gy, _mul
 
 
 def make_keypair():

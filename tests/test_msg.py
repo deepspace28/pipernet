@@ -4,7 +4,6 @@ inbox cursor semantics, secure-mode chat, and the dashboard HTTP surface."""
 import asyncio
 import json
 import sys
-import urllib.request
 
 sys.path.insert(0, __file__.rsplit("\\tests\\", 1)[0])
 
@@ -28,10 +27,10 @@ def _mesh(n, **kw):
     return build()
 
 
-async def _line(l: Node, r: Node):
-    """A -- B only (no direct link l<->r): forces multi-hop."""
-    l.add_peer((r.host, r.port))
-    r.add_peer((l.host, l.port))
+async def _line(left: Node, r: Node):
+    """A -- B only (no direct link left<->r): forces multi-hop."""
+    left.add_peer((r.host, r.port))
+    r.add_peer((left.host, left.port))
 
 
 def test_register_and_direct_delivery():

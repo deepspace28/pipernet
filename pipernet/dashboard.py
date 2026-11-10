@@ -14,12 +14,10 @@ Routes:
 """
 
 import asyncio
-import html
 import json
 import urllib.parse
 
 from .identity import IdentityError
-from .chunking import cid
 
 _PAGES = {}
 
