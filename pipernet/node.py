@@ -99,6 +99,14 @@ class Node:
             await self.server.wait_closed()
         self.alive = False
 
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.stop()
+        return False
+
     alive = True
 
     def add_peer(self, addr: tuple[str, int]):
