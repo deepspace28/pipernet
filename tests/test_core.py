@@ -4,6 +4,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pipernet import Node, chunk_data, cid
@@ -21,6 +23,18 @@ def test_chunking_roundtrip():
     assert len(chunks) == 6
     assert b"".join(chunks) == data
     assert len(set(cids)) == 6
+
+
+@pytest.mark.parametrize('chunk_size', [0, -1])
+def test_chunking_rejects_non_positive_size(chunk_size):
+    with pytest.raises(ValueError, match='chunk_size must be positive'):
+        chunk_data(b'data', chunk_size)
+
+
+@pytest.mark.parametrize('chunk_size', [True, 1.5, None])
+def test_chunking_rejects_non_integer_size(chunk_size):
+    with pytest.raises(TypeError, match='chunk_size must be an integer'):
+        chunk_data(b'data', chunk_size)
 
 
 def test_cid_is_content_address():
