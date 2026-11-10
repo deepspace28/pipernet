@@ -118,3 +118,13 @@ def test_status_shape():
         finally:
             await node.stop()
     run(t())
+
+
+def test_node_async_context_manager():
+    async def t():
+        async with Node() as node:
+            assert node.port > 0
+            s = node.status()
+            assert s["chunks"] == 0
+        assert node.alive is False
+    run(t())
