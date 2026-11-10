@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 
-from .chunking import CHUNK_SIZE, chunk_data, cid
+from .chunking import chunk_data, cid
 from .crypto import x25519_secret
 from .erasure import ErasureCodec, InsufficientShards
 from .identity import IdentityError, IdentityRegistry, env_id, verify_env

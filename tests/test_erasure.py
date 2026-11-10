@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from pipernet import DATA_SHARDS, PARITY_SHARDS, ErasureCodec, InsufficientShards, Node, cid
+from pipernet import DATA_SHARDS, PARITY_SHARDS, ErasureCodec, InsufficientShards, Node
 from pipernet.erasure import STRIP, _invert, gf_inv, gf_mul
 
 
