@@ -45,6 +45,15 @@ def test_hkdf_rejects_zero_length():
         hkdf_sha256(b"ikm", b"salt", b"info", 0)
 
 
+def test_hkdf_accepts_rfc_maximum_length():
+    assert len(hkdf_sha256(b"ikm", b"salt", b"info", 255 * 32)) == 255 * 32
+
+
+def test_hkdf_rejects_length_above_rfc_limit():
+    with pytest.raises(ValueError, match="exceed"):
+        hkdf_sha256(b"ikm", b"salt", b"info", 255 * 32 + 1)
+
+
 def test_x25519_rejects_bad_scalar():
     with pytest.raises(ValueError):
         x25519(b"short", b"\x00" * 32)

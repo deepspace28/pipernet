@@ -177,3 +177,50 @@ def test_hkdf_rfc5869_case_3_empty_salt_info():
     assert okm.hex() == ("8da4e775a563c18f715f802a063c5a31"
                          "b8a11f5c5ee1879ec3454e5f3c738d2d"
                          "9d201395faa4b61a96c8")
+
+
+# --- Edge cases ---------------------------------------------------------------
+
+def test_chacha20_zero_length_returns_empty():
+    assert chacha20_xor(hx("00" * 32), 0, hx("00" * 12), b"") == b""
+
+
+def test_aead_empty_plaintext_roundtrip():
+    key = hx("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+    nonce = hx("070000004041424344454647")
+    sealed = aead_chacha20_poly1305_seal(key, nonce, b"", aad=b"")
+    assert len(sealed) == 16  # tag only, no ciphertext
+    assert aead_chacha20_poly1305_open(key, nonce, sealed) == b""
+
+
+def test_aead_aad_longer_than_one_block():
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    data = b"multi-block payload"
+    aad = b"A" * 100  # > 16 bytes, exercises _pad16 over multiple blocks
+    sealed = aead_chacha20_poly1305_seal(key, nonce, data, aad=aad)
+    assert aead_chacha20_poly1305_open(key, nonce, sealed, aad=aad) == data
+    try:
+        aead_chacha20_poly1305_open(key, nonce, sealed, aad=b"other")
+        raise AssertionError("wrong AAD accepted")
+    except ValueError:
+        pass
+
+
+def test_aead_wrong_key_rejected():
+    key_a = os.urandom(32)
+    key_b = os.urandom(32)
+    nonce = os.urandom(12)
+    sealed = aead_chacha20_poly1305_seal(key_a, nonce, b"secret")
+    try:
+        aead_chacha20_poly1305_open(key_b, nonce, sealed)
+        raise AssertionError("wrong key accepted")
+    except ValueError:
+        pass
+
+
+def test_poly1305_multi_block_message_deterministic():
+    key = hx("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
+    msg = b"x" * 100  # spans multiple 16-byte Poly1305 blocks
+    assert len(poly1305(key, msg)) == 16
+    assert poly1305(key, msg) == poly1305(key, msg)
