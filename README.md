@@ -1,4 +1,6 @@
-# PiperNet — Pied Piper Prototype V0.5
+﻿# PiperNet - Pied Piper Prototype V0.5
+
+![CI](https://github.com/deepspace28/pipernet/actions/workflows/ci.yml/badge.svg)
 
 > *"It's the internet, completely decentralized."*
 
@@ -40,12 +42,12 @@ Then open in your browser:
 | Spec item | Status |
 |---|---|
 | Headless P2P node | done (`pipernet/node.py`) |
-| **Crypto primitives (Curve25519)** | **done — RFC 7748 X25519 (Montgomery ladder, vector-verified), RFC 8439 ChaCha20+Poly1305 AEAD, RFC 5869 HKDF — all pure stdlib (`pipernet/crypto.py`); wire-level session encryption is the next slice** |
-| Encrypted connections | done — per-connection X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (`pipernet/protocol.py`); the handshake now proves static node identity and clients pin it (TOFU) |
-| Distributed chunking & hashing | done — 1 MB chunks, SHA-256 CIDs (`pipernet/chunking.py`) |
-| **Erasure coding (8 data + 4 parity)** | **done — Cauchy RS over GF(2^8), stdlib-only (`pipernet/erasure.py`); 1.5x storage overhead vs replication's 3x; any 4 shard losses per chunk are survivable** |
-| Multi-peer replication | done — configurable replica factor (default mode) |
-| Failure detection & auto-repair | done — heartbeat liveness + replica top-up / **shard re-encode** loop |
+| **Crypto primitives (Curve25519)** | **done - RFC 7748 X25519 (Montgomery ladder, vector-verified), RFC 8439 ChaCha20+Poly1305 AEAD, RFC 5869 HKDF - all pure stdlib (`pipernet/crypto.py`); wire-level session encryption is the next slice** |
+| Encrypted connections | done â€” per-connection X25519 handshake (RFC 7748) -> HKDF -> ChaCha20-Poly1305 sealed frames (`pipernet/protocol.py`); the handshake now proves static node identity and clients pin it (TOFU) |
+| Distributed chunking & hashing | done â€” 1 MB chunks, SHA-256 CIDs (`pipernet/chunking.py`) |
+| **Erasure coding (8 data + 4 parity)** | **done â€” Cauchy RS over GF(2^8), stdlib-only (`pipernet/erasure.py`); 1.5x storage overhead vs replication's 3x; any 4 shard losses per chunk are survivable** |
+| Multi-peer replication | done â€” configurable replica factor (default mode) |
+| Failure detection & auto-repair | done â€” heartbeat liveness + replica top-up / **shard re-encode** loop |
 | Live web dashboard + PiedTube demo | done (`pipernet/dashboard.py`, serves on `:8080`) |
 
 Non-goals (explicitly out of V0.1): ISP replacement, global data centers,
@@ -53,7 +55,7 @@ custom ASICs, speculative token markets.
 
 ## Quickstart
 
-No third-party dependencies — Python 3.10+ standard library only.
+No third-party dependencies â€” Python 3.10+ standard library only.
 
 ```bash
 # run the resiliency demo (the deck's failure-tolerance proof)
@@ -80,7 +82,7 @@ What the demo does:
 
 ## Use it in code
 
-PiperNet is a library first — the demo is just one mesh topology. Spawn
+PiperNet is a library first â€” the demo is just one mesh topology. Spawn
 
 ### Node options
 
@@ -113,7 +115,7 @@ await dash.start(port=8080)          # returns the bound port
 | `/upload?name=my-video.mp4` | POST | raw bytes body -> chunked, hashed, spread; returns `{"id", "name"}` |
 | `/stream/<file_id>` | GET | reconstructs the file from the mesh, CID-verified, as raw bytes |
 
-Uploading through the UI is the same call the demo makes — the file is
+Uploading through the UI is the same call the demo makes â€” the file is
 chunked into 1 MB pieces, each gets a SHA-256 content ID, and replicas
 or shards are spread across peers; the self-healing repair loop runs
 every 2 s and restores placement when nodes die.
@@ -146,7 +148,7 @@ Replication targets are restored automatically when nodes die.
 
 ## Answering "where does the data actually live?"
 
-- `Node.manifests` = origin file index (Tier 1 · durable storage)
+- `Node.manifests` = origin file index (Tier 1 Â· durable storage)
 - Live peer set around each chunk = Tier 2 backbone replicas
 - The streaming/dashboard fetch = Tier 3 edge access (serves from any
   surviving holder, reconstructs and verifies CIDs on receipt)
