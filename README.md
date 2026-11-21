@@ -158,3 +158,13 @@ Replication targets are restored automatically when nodes die.
 - PiedPiperCoin service accounting (proof-of-service receipts, anti-Sybil)
 - QUIC transport (lsquic / `aioquic`) with mandatory end-to-end encryption - kept deferred while the dependency-free stance holds
 - Distributed origins: repair without a dedicated origin node (currently origin-only shard re-encoding)
+## Development
+
+Install the dev test dependency and run the suite:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest -q
+```
+
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs the same tests on Python 3.10, 3.11, and 3.12.
